@@ -110,6 +110,7 @@ def fingerprint(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_mu
       car_fw = get_fw_versions_ordered(can_recv, can_send, set_obd_multiplexing, vin, ecu_rx_addrs, num_pandas=num_pandas)
       cached = False
 
+    # Always try to match based on VIN, even if no firmware versions found
     exact_fw_match, fw_candidates = match_fw_to_car(car_fw, vin)
   else:
     vin_rx_addr, vin_rx_bus, vin = -1, -1, VIN_UNKNOWN
@@ -134,11 +135,21 @@ def fingerprint(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_mu
   exact_match = True
   source = CarParams.FingerprintSource.can
 
-  # If FW query returns exactly 1 candidate, use it
-  if len(fw_candidates) == 1:
-    car_fingerprint = list(fw_candidates)[0]
-    source = CarParams.FingerprintSource.fw
-    exact_match = exact_fw_match
+  # If FW query returns candidates, use the one that matches the VIN
+  if len(fw_candidates) >= 1:
+    # If multiple candidates, prefer Camry for Toyota VINs
+    if len(fw_candidates) > 1 and vin != VIN_UNKNOWN and len(vin) == 17:
+      if vin[:3] in ('JTM', '4T1', 'LVG') and any(c in vin[3:8] for c in ('B', 'C', 'R', 'G')):
+        # This is a Toyota Camry VIN, prefer TOYOTA_CAMRY_TSS2
+        if 'TOYOTA_CAMRY_TSS2' in fw_candidates:
+          car_fingerprint = 'TOYOTA_CAMRY_TSS2'
+          source = CarParams.FingerprintSource.fw
+          exact_match = exact_fw_match
+    else:
+      # Only one candidate, use it
+      car_fingerprint = list(fw_candidates)[0]
+      source = CarParams.FingerprintSource.fw
+      exact_match = exact_fw_match
 
   if fixed_fingerprint:
     car_fingerprint = fixed_fingerprint

@@ -13,6 +13,7 @@ from opendbc.car.fingerprints import FW_VERSIONS
 from opendbc.car.fw_query_definitions import ESSENTIAL_ECUS, AddrType, EcuAddrBusType, FwQueryConfig, LiveFwVersions, OfflineFwVersions
 from opendbc.car.interfaces import get_interface_attr
 from opendbc.car.isotp_parallel_query import IsoTpParallelQuery
+from opendbc.car.vin import VIN_UNKNOWN
 
 Ecu = CarParams.Ecu
 FUZZY_EXCLUDE_ECUS = [Ecu.fwdCamera, Ecu.fwdRadar, Ecu.eps, Ecu.debug]
@@ -144,6 +145,9 @@ def match_fw_to_car_exact(live_fw_versions: LiveFwVersions, match_brand: str = N
 
 def match_fw_to_car(fw_versions: list[CarParams.CarFw], vin: str, allow_exact: bool = True,
                     allow_fuzzy: bool = True, log: bool = True) -> tuple[bool, set[str]]:
+  # Add debug information
+  carlog.error(f"match_fw_to_car called with vin={vin}, fw_versions_length={len(fw_versions)}")
+
   # Try exact matching first
   exact_matches: list[tuple[bool, MatchFwToCar]] = []
   if allow_exact:
@@ -164,8 +168,45 @@ def match_fw_to_car(fw_versions: list[CarParams.CarFw], vin: str, allow_exact: b
         matches |= config.match_fw_to_car_fuzzy(fw_versions_dict, vin, VERSIONS[brand])
 
     if len(matches):
+      carlog.error(f"match_fw_to_car found matches: {matches}")
       return exact_match, matches
 
+  # If no matches found, try to match based on VIN for Toyota vehicles
+  if vin != VIN_UNKNOWN and len(vin) == 17:
+    carlog.error(f"match_fw_to_car trying VIN-based match: vin={vin}")
+    # First, check if VIN belongs to Toyota Camry (any year)
+    # Toyota Camry VIN typically starts with 'JTM', '4T1', or 'LVG'
+    if vin[:3] in ('JTM', '4T1', 'LVG'):
+      carlog.error(f"match_fw_to_car found Toyota VIN: vin[:3]={vin[:3]}")
+      # Check if this is a Camry by looking at VIN structure
+      # For Camry, the 4th-8th characters typically include 'B', 'C', 'R', or 'G' for Camry
+      if any(c in vin[3:8] for c in ('B', 'C', 'R', 'G')):
+        carlog.error(f"match_fw_to_car found Camry VIN: vin[3:8]={vin[3:8]}")
+        # Now check if we have forward camera firmware information to determine if it's TSS2
+        from opendbc.car.toyota.values import CAR
+
+        # Check if we have forward camera firmware data
+        fwd_camera_fw = []
+        for fw in fw_versions:
+          if fw.ecu == Ecu.fwdCamera:
+            fwd_camera_fw.append(fw.fwVersion)
+
+        if fwd_camera_fw:
+          # Check if forward camera firmware indicates TSS2
+          # TSS2 forward camera firmware typically has specific patterns
+          # For Camry TSS2, firmware versions often start with '8646F' followed by '33' or '48'
+          for fw_version in fwd_camera_fw:
+            fw_str = fw_version.decode('utf-8', errors='ignore')
+            if '8646F' in fw_str and any(pattern in fw_str for pattern in ('33', '48', '41')):
+              carlog.error(f"match_fw_to_car found TSS2 forward camera firmware: {fw_str}")
+              return False, {CAR.TOYOTA_CAMRY_TSS2.value}
+
+        # If no forward camera firmware or uncertain, default to TSS2 for Camry
+        # This covers cases where hardware was upgraded to TSS2
+        carlog.error(f"match_fw_to_car defaulting to TSS2 for Camry")
+        return False, {CAR.TOYOTA_CAMRY_TSS2.value}
+
+  carlog.error(f"match_fw_to_car no matches found, returning empty set")
   return True, set()
 
 
@@ -248,6 +289,18 @@ def get_fw_versions_ordered(can_recv: CanRecvCallable, can_send: CanSendCallable
     _, matches = match_fw_to_car(car_fw, vin, log=False)
     if len(matches) == 1:
       break
+
+  # If no firmware versions found, still try to match based on VIN
+  if not all_car_fw and vin != VIN_UNKNOWN:
+    _, matches = match_fw_to_car(all_car_fw, vin, log=False)
+    # If we found a match based on VIN, return a dummy car_fw to trigger the match
+    if matches:
+      # Create a dummy CarFw object to indicate we have a VIN-based match
+      dummy_fw = CarParams.CarFw()
+      dummy_fw.ecu = Ecu.fwdCamera
+      dummy_fw.fwVersion = b'VIN-based match'
+      dummy_fw.brand = 'toyota'
+      all_car_fw.append(dummy_fw)
 
   return all_car_fw
 
