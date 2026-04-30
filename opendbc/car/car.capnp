@@ -115,6 +115,11 @@ struct OnroadEventDEPRECATED @0x9b1657f34caf3ad3 {
     personalityChanged @122;
     aeb @123;
 
+    # CarrotPilot traffic events
+    trafficSignChanged @126;
+    trafficSignGreen @127;
+    trafficStopping @128;
+
     radarCanErrorDEPRECATED @15;
     communityFeatureDisallowedDEPRECATED @62;
     radarCommIssueDEPRECATED @67;
@@ -152,14 +157,14 @@ struct OnroadEventDEPRECATED @0x9b1657f34caf3ad3 {
   }
 }
 
-# ******* main car state @ 100hz *******
-# all speeds in m/s
-
 struct CarState {
   # CAN health
   canValid @26 :Bool;       # invalid counter/checksums
   canTimeout @40 :Bool;     # CAN bus dropped out
   canErrorCounter @48 :UInt32;
+
+  # process meta
+  cumLagMs @50 :Float32;
 
   # car speed
   vEgo @1 :Float32;            # best estimate of speed
@@ -174,11 +179,7 @@ struct CarState {
   standstill @18 :Bool;
   wheelSpeeds @2 :WheelSpeeds;
 
-  # gas pedal, 0.0-1.0
-  gas @3 :Float32;        # this is user pedal only
   gasPressed @4 :Bool;    # this is user pedal only
-
-  engineRpm @46 :Float32;
 
   # brake pedal, 0.0-1.0
   brake @5 :Float32;      # this is user pedal only
@@ -189,15 +190,18 @@ struct CarState {
 
   # steering wheel
   steeringAngleDeg @7 :Float32;
-  steeringAngleOffsetDeg @37 :Float32; # Offset betweens sensors in case there multiple
-  steeringRateDeg @15 :Float32;
-  steeringTorque @8 :Float32;      # TODO: standardize units
-  steeringTorqueEps @27 :Float32;  # TODO: standardize units
-  steeringPressed @9 :Bool;        # if the user is using the steering wheel
-  steerFaultTemporary @35 :Bool;   # temporary EPS fault
-  steerFaultPermanent @36 :Bool;   # permanent EPS fault
+  steeringAngleOffsetDeg @37 :Float32; # Offset between sensors in case there multiple
+  steeringRateDeg @15 :Float32;    # optional
+  steeringTorque @8 :Float32;      # Native CAN units, only needed on cars where it's used for control
+  steeringTorqueEps @27 :Float32;  # Native CAN units, only needed on cars where it's used for control
+  steeringPressed @9 :Bool;        # is the user overring the steering wheel?
+  steeringDisengage @58 :Bool;     # more force than steeringPressed, disengages for applicable brands
+  steerFaultTemporary @35 :Bool;
+  steerFaultPermanent @36 :Bool;
+
   invalidLkasSetting @55 :Bool;    # stock LKAS is incorrectly configured (i.e. on or off)
   stockAeb @30 :Bool;
+  stockLkas @59 :Bool;
   stockFcw @31 :Bool;
   espDisabled @32 :Bool;
   accFaulted @42 :Bool;
@@ -205,6 +209,7 @@ struct CarState {
   espActive @51 :Bool;
   vehicleSensorsInvalid @52 :Bool;  # invalid steering angle readings, etc.
   lowSpeedAlert @56 :Bool;  # lost steering control due to a dynamic min steering speed
+  blockPcmEnable @60 :Bool;  # whether to allow PCM to enable this frame
 
   # cruise state
   cruiseState @10 :CruiseState;
@@ -220,21 +225,25 @@ struct CarState {
   genericToggle @23 :Bool;
 
   # lock info
-  doorOpen @24 :Bool;
-  seatbeltUnlatched @25 :Bool;
-
-  # clutch (manual transmission only)
-  clutchPressed @28 :Bool;
+  doorOpen @24 :Bool;           # ideally includes all doors
+  seatbeltUnlatched @25 :Bool;  # driver seatbelt
 
   # blindspot sensors
-  leftBlindspot @33 :Bool; # Is there something blocking the left lane change
+  leftBlindspot @33 :Bool;  # Is there something blocking the left lane change
   rightBlindspot @34 :Bool; # Is there something blocking the right lane change
 
-  fuelGauge @41 :Float32; # battery or fuel tank level from 0.0 to 1.0
+  fuelGauge @41 :Float32; # battery or fuel tank level from [0.0, 1.0]
   charging @43 :Bool;
 
-  # process meta
-  cumLagMs @50 :Float32;
+  # CarrotPilot fields
+  vCluRatio @61 :Float32;
+  logCarrot @62 :Text;
+  softHoldActive @63 :Int16;    # 0: not active, 1: active ready, 2: activated
+  activateCruise @64 :Int16;
+  latEnabled @65 :Bool;
+  useLaneLineSpeed @66 :Float32;
+  carrotCruise @67 :Int16;
+  pcmCruiseGap @68 :Int16;      # 0: can't read, 1,2,3,4: gap setting
 
   struct WheelSpeeds {
     # optional wheel speeds
@@ -249,9 +258,10 @@ struct CarState {
     speed @1 :Float32;
     speedCluster @6 :Float32;  # Set speed as shown on instrument cluster
     available @2 :Bool;
-    speedOffset @3 :Float32;
     standstill @4 :Bool;
     nonAdaptive @5 :Bool;
+
+    speedOffsetDEPRECATED @3 :Float32;
   }
 
   enum GearShifter {
@@ -285,16 +295,22 @@ struct CarState {
       setCruise @9;
       resumeCruise @10;
       gapAdjustCruise @11;
+      lfaButton @12;
+      paddleLeft @13;
+      paddleRight @14;
     }
   }
 
   # deprecated
   errorsDEPRECATED @0 :List(OnroadEventDEPRECATED.EventName);
+  gasDEPRECATED @3 :Float32;        # this is user pedal only
   brakeLightsDEPRECATED @19 :Bool;
   steeringRateLimitedDEPRECATED @29 :Bool;
   canMonoTimesDEPRECATED @12: List(UInt64);
   canRcvTimeoutDEPRECATED @49 :Bool;
   eventsDEPRECATED @13 :List(OnroadEventDEPRECATED);
+  clutchPressedDEPRECATED @28 :Bool;
+  engineRpm @46 :Float32;
 }
 
 # ******* radar state @ 20hz *******
@@ -405,6 +421,23 @@ struct CarControl {
     leftLaneDepart @9: Bool;
     leadDistanceBars @10: Int8;  # 1-3: 1 is closest, 3 is farthest. some ports may utilize 2-4 bars instead
 
+    # CarrotPilot HUD fields
+    activeCarrot @11 :Int16;
+    leadDistance @12 :Float32;
+    leadRelSpeed @13 :Float32;
+    leadDPath @14 :Float32;
+    leadRadar @15 :Int16;
+    modelDesire @16 :Int16;
+    atcDistance @17 :Float32;
+    leadLeftDist @18 :Float32;
+    leadRightDist @19 :Float32;
+    leadLeftLat @20 :Float32;
+    leadRightLat @21 :Float32;
+    leadLeftDist2 @22 :Float32;
+    leadRightDist2 @23 :Float32;
+    leadLeftLat2 @24 :Float32;
+    leadRightLat2 @25 :Float32;
+
     # not used with the dash, TODO: separate structs for dash UI and device UI
     audibleAlert @5: AudibleAlert;
 
@@ -437,13 +470,13 @@ struct CarControl {
     }
   }
 
-  gasDEPRECATED @1 :Float32;
-  brakeDEPRECATED @2 :Float32;
-  steeringTorqueDEPRECATED @3 :Float32;
-  activeDEPRECATED @7 :Bool;
-  rollDEPRECATED @8 :Float32;
-  pitchDEPRECATED @9 :Float32;
-  actuatorsOutputDEPRECATED @10 :Actuators;
+  gas@1 :Float32;
+  brake @2 :Float32;
+  steeringTorque @3 :Float32;
+  active @7 :Bool;
+  roll @8 :Float32;
+  pitch @9 :Float32;
+  actuatorsOutput @10 :Actuators;
 }
 
 struct CarOutput {
@@ -466,14 +499,15 @@ struct CarParams {
   enableDsu @5 :Bool;        # driving support unit
   enableBsm @56 :Bool;       # blind spot monitoring
   flags @64 :UInt32;         # flags for car specific quirks
-  experimentalLongitudinalAvailable @71 :Bool;
+  alphaLongitudinalAvailable @71 :Bool;
 
   minEnableSpeed @7 :Float32;
   minSteerSpeed @8 :Float32;
+  steerAtStandstill @77 :Bool;  # is steering available at standstill? just check if it faults
   safetyConfigs @62 :List(SafetyConfig);
   alternativeExperience @65 :Int16;      # panda flag for features like no disengage on gas
 
-  # Car docs fields
+  # Car docs fields, not used for control
   maxLateralAccel @68 :Float32;
   autoResumeSng @69 :Bool;               # describes whether car can resume from a stop automatically
 
@@ -528,6 +562,7 @@ struct CarParams {
 
   secOcRequired @75 :Bool;  # Car requires SecOC message authentication to operate
   secOcKeyAvailable @76 :Bool;  # Stored SecOC key loaded from params
+  experimentalLongitudinalAvailable @78 :Bool;  # Is experimental longitudinal available for this car
 
   struct SafetyConfig {
     safetyModel @0 :SafetyModel;
@@ -550,7 +585,6 @@ struct CarParams {
   }
 
   struct LateralTorqueTuning {
-    useSteeringAngle @0 :Bool;
     kp @1 :Float32;
     ki @2 :Float32;
     friction @3 :Float32;
@@ -558,6 +592,7 @@ struct CarParams {
     steeringAngleDeadzoneDeg @5 :Float32;
     latAccelFactor @6 :Float32;
     latAccelOffset @7 :Float32;
+    useSteeringAngle @0 :Bool;
   }
 
   struct LongitudinalPIDTuning {
@@ -636,7 +671,6 @@ struct CarParams {
     fcaGiorgio @32;
     rivian @33;
     volkswagenMeb @34;
-    byd @35;
   }
 
   enum SteerControlType {
