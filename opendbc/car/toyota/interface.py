@@ -159,6 +159,9 @@ class CarInterface(CarInterfaceBase):
     if candidate in UNSUPPORTED_DSU_CAR:
       ret.safetyParam |= ToyotaSafetyFlagsSP.UNSUPPORTED_DSU
 
+    # All Toyota TSS2 platforms support ICBM (factory cruise button management)
+    ret.intelligentCruiseButtonManagementAvailable = True
+
     return ret
 
   @staticmethod
