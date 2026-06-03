@@ -1,0 +1,12 @@
+# Speed-dependent torque parameters — per-car speed-binned config.
+#
+# Each entry maps a car fingerprint to:
+#   speed_bp    — speed breakpoints in m/s (bin centers)
+#   laf_bp      — latAccelFactor at each speed
+#   friction_bp — friction coefficient at each speed
+#
+# The online learner in torqued.py runs independent SVD fits per speed bin.
+# laf_bp/friction_bp provide starting values and define +/-30% sanity bounds.
+#
+# Cars without an entry here will seed all bins with their global offline
+# LAF and friction values when speed-dependent learning is enabled.
