@@ -146,3 +146,36 @@ def create_ui_command(packer, steer, chime, left_line, right_line, left_lane_dep
     ]})
 
   return packer.make_can_msg("LKAS_HUD", 0, values)
+
+
+def create_set_bsm_debug_mode(side, enabled):
+  """Creates a CAN message to enable/disable BSM debug mode on the specified side."""
+  dat = b"\x02\x3B\x00\x00\x00\x00\x00\x00"
+  if enabled:
+    dat = b"\x02\x3B\x01\x00\x00\x00\x00\x00"
+  return (0x1D0, dat, 0)
+
+
+def create_bsm_polling_status(side):
+  """Creates a CAN message to poll BSM status on the specified side."""
+  dat = b"\x02\x3B\x02\x00\x00\x00\x00\x00"
+  return (0x1D0, dat, 0)
+
+
+def create_brake_hold_command(packer, frame, pre_collision_2, brake_hold_active):
+  """Creates a CAN message for auto brake hold using PRE_COLLISION_2."""
+  values = {
+    "COUNTER": frame % 4,
+    "DSS1GDRV": 0.0,
+    "PCSALM": 0,
+    "IBTRGR": 0,
+    "PCS_ACTIVE": 0,
+    "PBATRGR": 1 if brake_hold_active else 0,
+    "PREFILL": 0,
+    "AVSTRGR": 0,
+  }
+  if pre_collision_2:
+    for key in values:
+      if key in pre_collision_2:
+        values[key] = pre_collision_2[key]
+  return packer.make_can_msg("PRE_COLLISION_2", 0, values)

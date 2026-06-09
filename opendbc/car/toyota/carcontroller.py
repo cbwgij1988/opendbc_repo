@@ -13,11 +13,16 @@ from opendbc.car.toyota.values import CAR, STATIC_DSU_MSGS, NO_STOP_TIMER_CAR, T
                                         CarControllerParams, ToyotaFlags, \
                                         UNSUPPORTED_DSU_CAR
 from opendbc.can.packer import CANPacker
+from opendbc.sunnypilot.car.toyota.values import ToyotaFlagsSP
 
 Ecu = structs.CarParams.Ecu
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 SteerControlType = structs.CarParams.SteerControlType
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
+GearShifter = structs.CarState.GearShifter
+
+LEFT_BLINDSPOT = b"\x41"
+RIGHT_BLINDSPOT = b"\x42"
 
 # The up limit allows the brakes/gas to unwind quickly leaving a stop,
 # the down limit roughly matches the rate of ACCEL_NET, reducing PCM compensation windup
@@ -74,6 +79,19 @@ class CarController(CarControllerBase):
     self.secoc_lka_message_counter = 0
     self.secoc_lta_message_counter = 0
     self.secoc_prev_reset_counter = 0
+
+    # Enhanced BSM state
+    self.left_blindspot_debug_enabled = False
+    self.right_blindspot_debug_enabled = False
+    self.left_last_blindspot_frame = 0
+    self.right_last_blindspot_frame = 0
+
+    # Auto Brake Hold state
+    if CP_SP.flags & ToyotaFlagsSP.SP_AUTO_BRAKE_HOLD:
+      self.brake_hold_active: bool = False
+      self._brake_hold_counter: int = 0
+      self._brake_hold_reset: bool = False
+      self._prev_brake_pressed: bool = False
 
   def update(self, CC, CC_SP, CS, now_nanos):
     actuators = CC.actuators
@@ -165,14 +183,26 @@ class CarController(CarControllerBase):
 
     # *** gas and brake ***
 
-    # on entering standstill, send standstill request
-    if CS.out.standstill and not self.last_standstill and (self.CP.carFingerprint not in NO_STOP_TIMER_CAR):
-      self.standstill_req = True
-    if CS.pcm_acc_status != 8:
-      # pcm entered standstill or it's disabled
-      self.standstill_req = False
+    # on entering standstill, send standstill request for older TSS-P cars
+    # that aren't designed to stay engaged at a stop
+    if self.CP.carFingerprint not in NO_STOP_TIMER_CAR:
+      if CS.out.standstill and not self.last_standstill and not (self.CP_SP.flags & ToyotaFlagsSP.STOP_AND_GO_HACK):
+        self.standstill_req = True
+      if CS.pcm_acc_status != 8:
+        self.standstill_req = False
+    else:
+      if not self.CP.flags & ToyotaFlags.HYBRID.value:
+        should_resume = actuators.accel > 0
+        if should_resume:
+          self.standstill_req = False
+        if not should_resume and CS.out.cruiseState.standstill:
+          self.standstill_req = True
 
     self.last_standstill = CS.out.standstill
+
+    # Auto Brake Hold messages
+    if self.CP_SP.flags & ToyotaFlagsSP.SP_AUTO_BRAKE_HOLD:
+      can_sends.extend(self.create_auto_brake_hold_messages(CS))
 
     # handle UI messages
     fcw_alert = hud_control.visualAlert == VisualAlert.fcw
@@ -271,6 +301,10 @@ class CarController(CarControllerBase):
       if (self.frame % 100 == 0 or send_ui) and (self.CP.enableDsu or self.CP.flags & ToyotaFlags.DISABLE_RADAR.value):
         can_sends.append(toyotacan.create_fcw_command(self.packer, fcw_alert))
 
+    # *** Enhanced BSM ***
+    if self.CP_SP.flags & ToyotaFlagsSP.SP_ENHANCED_BSM and self.frame > 200:
+      can_sends.extend(self.create_enhanced_bsm_messages(CS, 20, True))
+
     # *** static msgs ***
     for addr, cars, bus, fr_step, vl in STATIC_DSU_MSGS:
       if self.frame % fr_step == 0 and self.CP.enableDsu and self.CP.carFingerprint in cars:
@@ -288,3 +322,55 @@ class CarController(CarControllerBase):
 
     self.frame += 1
     return new_actuators, can_sends
+
+  # Enhanced BSM (@arne182, @rav4kumar)
+  def create_enhanced_bsm_messages(self, CS, e_bsm_rate=20, always_on=True):
+    can_sends = []
+
+    if not self.left_blindspot_debug_enabled:
+      if always_on or CS.out.vEgo > 6:
+        can_sends.append(toyotacan.create_set_bsm_debug_mode(LEFT_BLINDSPOT, True))
+        self.left_blindspot_debug_enabled = True
+    else:
+      if not always_on and self.frame - self.left_last_blindspot_frame > 50:
+        can_sends.append(toyotacan.create_set_bsm_debug_mode(LEFT_BLINDSPOT, False))
+        self.left_blindspot_debug_enabled = False
+      if self.frame % e_bsm_rate == 0:
+        can_sends.append(toyotacan.create_bsm_polling_status(LEFT_BLINDSPOT))
+        self.left_last_blindspot_frame = self.frame
+
+    if not self.right_blindspot_debug_enabled:
+      if always_on or CS.out.vEgo > 6:
+        can_sends.append(toyotacan.create_set_bsm_debug_mode(RIGHT_BLINDSPOT, True))
+        self.right_blindspot_debug_enabled = True
+    else:
+      if not always_on and self.frame - self.right_last_blindspot_frame > 50:
+        can_sends.append(toyotacan.create_set_bsm_debug_mode(RIGHT_BLINDSPOT, False))
+        self.right_blindspot_debug_enabled = False
+      if self.frame % e_bsm_rate == e_bsm_rate // 2:
+        can_sends.append(toyotacan.create_bsm_polling_status(RIGHT_BLINDSPOT))
+        self.right_last_blindspot_frame = self.frame
+
+    return can_sends
+
+  # Auto Brake Hold (https://github.com/AlexandreSato/)
+  def create_auto_brake_hold_messages(self, CS, brake_hold_allowed_timer=100):
+    can_sends = []
+    disallowed_gears = [GearShifter.park, GearShifter.reverse]
+    brake_hold_allowed = CS.out.standstill and CS.out.cruiseState.available and not CS.out.gasPressed and \
+                         not CS.out.cruiseState.enabled and (CS.out.gearShifter not in disallowed_gears)
+
+    if brake_hold_allowed:
+      self._brake_hold_counter += 1
+      self.brake_hold_active = self._brake_hold_counter > brake_hold_allowed_timer and not self._brake_hold_reset
+      self._brake_hold_reset = not self._prev_brake_pressed and CS.out.brakePressed and not self._brake_hold_reset
+    else:
+      self._brake_hold_counter = 0
+      self.brake_hold_active = False
+      self._brake_hold_reset = False
+    self._prev_brake_pressed = CS.out.brakePressed
+
+    if self.frame % 2 == 0:
+      can_sends.append(toyotacan.create_brake_hold_command(self.packer, self.frame, getattr(CS, 'pre_collision_2', {}), self.brake_hold_active))
+
+    return can_sends

@@ -4,10 +4,10 @@ from opendbc.car.toyota.carcontroller import CarController
 from opendbc.car.toyota.radar_interface import RadarInterface
 from opendbc.car.toyota.values import Ecu, CAR, DBC, ToyotaFlags, CarControllerParams, TSS2_CAR, RADAR_ACC_CAR, NO_DSU_CAR, \
                                                   MIN_ACC_SPEED, EPS_SCALE, UNSUPPORTED_DSU_CAR, NO_STOP_TIMER_CAR, ANGLE_CONTROL_CAR, \
-                                                  ToyotaSafetyFlags
+                                                  ToyotaSafetyFlags, SECOC_CAR
 from opendbc.car.disable_ecu import disable_ecu
 from opendbc.car.interfaces import CarInterfaceBase
-from opendbc.sunnypilot.car.toyota.values import ToyotaSafetyFlagsSP
+from opendbc.sunnypilot.car.toyota.values import ToyotaFlagsSP, ToyotaSafetyFlagsSP
 
 SteerControlType = structs.CarParams.SteerControlType
 
@@ -161,6 +161,14 @@ class CarInterface(CarInterfaceBase):
 
     # All Toyota TSS2 platforms support ICBM (factory cruise button management)
     ret.intelligentCruiseButtonManagementAvailable = True
+
+    # SP_ENHANCED_BSM detection
+    if 0x1D0 in fingerprint[0] and candidate in (TSS2_CAR - SECOC_CAR):
+      ret.flags |= ToyotaFlagsSP.SP_ENHANCED_BSM.value
+
+    # SP_NEED_DEBUG_BSM specific car detection
+    if candidate == CAR.TOYOTA_PRIUS_TSS2:
+      ret.flags |= ToyotaFlagsSP.SP_NEED_DEBUG_BSM.value
 
     return ret
 

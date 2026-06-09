@@ -9,6 +9,7 @@ from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.interfaces import CarStateBase
 from opendbc.car.toyota.values import ToyotaFlags, CAR, DBC, STEER_THRESHOLD, NO_STOP_TIMER_CAR, \
                                                   TSS2_CAR, RADAR_ACC_CAR, EPS_SCALE, UNSUPPORTED_DSU_CAR
+from opendbc.sunnypilot.car.toyota.values import ToyotaFlagsSP
 
 ButtonType = structs.CarState.ButtonEvent.Type
 SteerControlType = structs.CarParams.SteerControlType
@@ -52,6 +53,22 @@ class CarState(CarStateBase):
     self.lkas_hud = {}
     self.gvc = 0.0
     self.secoc_synchronization = None
+
+    # Enhanced BSM state
+    self._left_blindspot = False
+    self._left_blindspot_d1 = 0
+    self._left_blindspot_d2 = 0
+    self._left_blindspot_counter = 0
+    self._right_blindspot = False
+    self._right_blindspot_d1 = 0
+    self._right_blindspot_d2 = 0
+    self._right_blindspot_counter = 0
+
+    # Auto Brake Hold state
+    if CP_SP.flags & ToyotaFlagsSP.SP_AUTO_BRAKE_HOLD:
+      self.pre_collision_2 = {}
+
+    self.frame = 0
 
   def update(self, can_parsers) -> structs.CarState:
     cp = can_parsers[Bus.pt]
@@ -192,7 +209,50 @@ class CarState(CarStateBase):
 
       ret.buttonEvents = create_button_events(self.distance_button, prev_distance_button, {1: ButtonType.gapAdjustCruise})
 
+    # Enhanced BSM - override with debug CAN data when enabled
+    if self.CP_SP.flags & ToyotaFlagsSP.SP_ENHANCED_BSM and self.frame > 199:
+      ret.leftBlindspot, ret.rightBlindspot = self._get_enhanced_bsm(cp)
+
+    # Auto Brake Hold - capture PRE_COLLISION_2 for brake hold commands
+    if self.CP_SP.flags & ToyotaFlagsSP.SP_AUTO_BRAKE_HOLD:
+      self.pre_collision_2 = copy.copy(cp_cam.vl.get("PRE_COLLISION_2", {}))
+
+    self.frame += 1
+
     return ret
+
+  def _get_enhanced_bsm(self, cp):
+    distance_1 = cp.vl.get("DEBUG", {}).get('BLINDSPOTD1')
+    distance_2 = cp.vl.get("DEBUG", {}).get('BLINDSPOTD2')
+    side = cp.vl.get("DEBUG", {}).get('BLINDSPOTSIDE')
+
+    if all(val is not None for val in [distance_1, distance_2, side]):
+      if side == 65:
+        if distance_1 != self._left_blindspot_d1 or distance_2 != self._left_blindspot_d2:
+          self._left_blindspot_d1 = distance_1
+          self._left_blindspot_d2 = distance_2
+          self._left_blindspot_counter = 100
+        self._left_blindspot = distance_1 > 10 or distance_2 > 10
+
+      elif side == 66:
+        if distance_1 != self._right_blindspot_d1 or distance_2 != self._right_blindspot_d2:
+          self._right_blindspot_d1 = distance_1
+          self._right_blindspot_d2 = distance_2
+          self._right_blindspot_counter = 100
+        self._right_blindspot = distance_1 > 10 or distance_2 > 10
+
+      self._left_blindspot_counter = max(0, self._left_blindspot_counter - 1)
+      self._right_blindspot_counter = max(0, self._right_blindspot_counter - 1)
+
+      if self._left_blindspot_counter == 0:
+        self._left_blindspot = False
+        self._left_blindspot_d1 = self._left_blindspot_d2 = 0
+
+      if self._right_blindspot_counter == 0:
+        self._right_blindspot = False
+        self._right_blindspot_d1 = self._right_blindspot_d2 = 0
+
+    return self._left_blindspot, self._right_blindspot
 
   @staticmethod
   def get_can_parsers(CP, CP_SP):
@@ -264,6 +324,16 @@ class CarState(CarStateBase):
         cam_messages += [
           ("PRE_COLLISION", 33),
         ]
+
+    # PRE_COLLISION_2 for Auto Brake Hold
+    if CP_SP.flags & ToyotaFlagsSP.SP_AUTO_BRAKE_HOLD:
+      cam_messages += [
+        ("PRE_COLLISION_2", 33),
+      ]
+
+    # Add DEBUG message parsing for Enhanced BSM
+    if CP_SP.flags & ToyotaFlagsSP.SP_ENHANCED_BSM:
+      pt_messages.append(("DEBUG", 20))
 
     return {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 0),
