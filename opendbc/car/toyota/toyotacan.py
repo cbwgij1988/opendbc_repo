@@ -164,18 +164,32 @@ def create_bsm_polling_status(side):
 
 def create_brake_hold_command(packer, frame, pre_collision_2, brake_hold_active):
   """Creates a CAN message for auto brake hold using PRE_COLLISION_2."""
-  values = {
-    "COUNTER": frame % 4,
-    "DSS1GDRV": 0.0,
-    "PCSALM": 0,
-    "IBTRGR": 0,
-    "PCS_ACTIVE": 0,
-    "PBATRGR": 1 if brake_hold_active else 0,
-    "PREFILL": 0,
-    "AVSTRGR": 0,
-  }
-  if pre_collision_2:
-    for key in values:
-      if key in pre_collision_2:
-        values[key] = pre_collision_2[key]
+  values = {s: pre_collision_2.get(s, 0) for s in [
+    "DSS1GDRV",
+    "DS1STAT2",
+    "DS1STBK2",
+    "PCSWAR",
+    "PCSALM",
+    "PCSOPR",
+    "PCSABK",
+    "PBATRGR",
+    "PPTRGR",
+    "IBTRGR",
+    "CLEXTRGR",
+    "IRLT_REQ",
+    "BRKHLD",
+    "AVSTRGR",
+    "VGRSTRGR",
+    "PREFILL",
+    "PBRTRGR",
+    "PCSDIS",
+    "PBPREPMP",
+  ]}
+
+  if brake_hold_active:
+    values = {
+      "DSS1GDRV": 0x3FF,
+      "PBRTRGR": frame % 730 < 727,  # cut actuation for 3 frames
+    }
+
   return packer.make_can_msg("PRE_COLLISION_2", 0, values)

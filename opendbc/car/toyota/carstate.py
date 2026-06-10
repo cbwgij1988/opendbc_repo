@@ -1,6 +1,8 @@
 import copy
+import os
 import numpy as np
 
+from opendbc import DBC_PATH
 from opendbc.can.can_define import CANDefine
 from opendbc.can.parser import CANParser
 from opendbc.car import Bus, DT_CTRL, create_button_events, structs
@@ -331,9 +333,13 @@ class CarState(CarStateBase):
         ("PRE_COLLISION_2", 33),
       ]
 
-    # Add DEBUG message parsing for Enhanced BSM
+    # Add DEBUG message parsing for Enhanced BSM (only if DBC has it)
     if CP_SP.flags & ToyotaFlagsSP.SP_ENHANCED_BSM:
-      pt_messages.append(("DEBUG", 20))
+      dbc_file = os.path.join(DBC_PATH, DBC[CP.carFingerprint][Bus.pt] + ".dbc")
+      if os.path.exists(dbc_file) and any("DEBUG" in line for line in open(dbc_file)):
+        pt_messages.append(("DEBUG", 20))
+      else:
+        cloudlog.warning("Enhanced BSM disabled: DEBUG message not found in DBC")
 
     return {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 0),
