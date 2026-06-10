@@ -162,11 +162,7 @@ class CarInterface(CarInterfaceBase):
     # All Toyota TSS2 platforms support ICBM (factory cruise button management)
     ret.intelligentCruiseButtonManagementAvailable = True
 
-    # SP_ENHANCED_BSM detection
-    if 0x1D0 in fingerprint[0] and candidate in (TSS2_CAR - SECOC_CAR):
-      ret.flags |= ToyotaFlagsSP.SP_ENHANCED_BSM.value
-
-    # SP_NEED_DEBUG_BSM specific car detection
+    # SP_NEED_DEBUG_BSM specific car detection (hardware marker)
     if candidate == CAR.TOYOTA_PRIUS_TSS2:
       ret.flags |= ToyotaFlagsSP.SP_NEED_DEBUG_BSM.value
 
