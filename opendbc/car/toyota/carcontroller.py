@@ -350,7 +350,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     if self.frame % 20 == 0 and self.CP.flags & ToyotaFlags.DISABLE_RADAR.value:
       can_sends.append(make_tester_present_msg(0x750, 0, 0xF))
 
-    if self.CP_SP.flags & ToyotaFlagsSP.SP_ENHANCED_BSM and self.frame > 200:
+    if self.CP_SP.flags & ToyotaFlagsSP.SP_ENHANCED_BSM and self.CP_SP.flags & ToyotaFlagsSP.SP_NEED_DEBUG_BSM and self.frame > 200:
       can_sends.extend(self.create_enhanced_bsm_messages(CS, 20, True))
 
     new_actuators = actuators.as_builder()

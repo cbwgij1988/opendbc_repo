@@ -268,7 +268,7 @@ class CarState(CarStateBase, CarStateExt):
 
     ret.buttonEvents = buttonEvents
 
-    if self.CP_SP.flags & ToyotaFlagsSP.SP_ENHANCED_BSM and self.frame > 199:
+    if self.CP_SP.flags & ToyotaFlagsSP.SP_ENHANCED_BSM and self.CP_SP.flags & ToyotaFlagsSP.SP_NEED_DEBUG_BSM and self.frame > 199:
       ret.leftBlindspot, ret.rightBlindspot = self.sp_get_enhanced_bsm(cp)
 
     if self.CP_SP.flags & ToyotaFlagsSP.SP_AUTO_BRAKE_HOLD:
