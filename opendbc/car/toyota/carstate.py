@@ -26,6 +26,7 @@ TEMP_STEER_FAULTS = (0, 11)
 # - lka/lta msg drop out: 3 (recoverable)
 # - prolonged high driver torque: 17 (permanent)
 PERM_STEER_FAULTS = (3, 17)
+PERM_STEER_FAULT_DEBOUNCE_FRAMES = 10
 
 
 class CarState(CarStateBase):
@@ -54,6 +55,7 @@ class CarState(CarStateBase):
     self.acc_type = 1
     self.lkas_hud = {}
     self.gvc = 0.0
+    self.perm_steer_fault_counter = 0
     self.secoc_synchronization = None
 
     # Enhanced BSM state
@@ -144,7 +146,14 @@ class CarState(CarStateBase):
 
     # Check EPS LKA/LTA fault status
     ret.steerFaultTemporary = cp.vl["EPS_STATUS"]["LKA_STATE"] in TEMP_STEER_FAULTS
-    ret.steerFaultPermanent = cp.vl["EPS_STATUS"]["LKA_STATE"] in PERM_STEER_FAULTS
+
+    # Debounce permanent faults: require N consecutive frames before triggering
+    lka_perm_fault = cp.vl["EPS_STATUS"]["LKA_STATE"] in PERM_STEER_FAULTS
+    if lka_perm_fault:
+      self.perm_steer_fault_counter += 1
+    else:
+      self.perm_steer_fault_counter = 0
+    ret.steerFaultPermanent = self.perm_steer_fault_counter >= PERM_STEER_FAULT_DEBOUNCE_FRAMES
 
     if self.CP.steerControlType == SteerControlType.angle:
       ret.steerFaultTemporary = ret.steerFaultTemporary or cp.vl["EPS_STATUS"]["LTA_STATE"] in TEMP_STEER_FAULTS
