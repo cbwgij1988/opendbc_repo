@@ -66,6 +66,7 @@ class CarInterface(CarInterfaceBase):
             ret.radarUnavailable = False
         else:
             ret.radarUnavailable = True #candidate not in PT_RADAR_CAR
+        ret.noImu = True
 
 
         ret.minEnableSpeed = -1.

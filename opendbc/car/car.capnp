@@ -303,7 +303,7 @@ struct CarState {
 
   # deprecated
   errorsDEPRECATED @0 :List(OnroadEventDEPRECATED.EventName);
-  gasDEPRECATED @3 :Float32;        # this is user pedal only
+  gas @3 :Float32;        # this is user pedal only
   brakeLightsDEPRECATED @19 :Bool;
   steeringRateLimitedDEPRECATED @29 :Bool;
   canMonoTimesDEPRECATED @12: List(UInt64);
@@ -563,6 +563,7 @@ struct CarParams {
   secOcRequired @75 :Bool;  # Car requires SecOC message authentication to operate
   secOcKeyAvailable @76 :Bool;  # Stored SecOC key loaded from params
   experimentalLongitudinalAvailable @78 :Bool;  # Is experimental longitudinal available for this car
+  noImu @79 :Bool;  # Car has no IMU, use wheel speeds and yaw rate instead
 
   struct SafetyConfig {
     safetyModel @0 :SafetyModel;
@@ -671,6 +672,7 @@ struct CarParams {
     fcaGiorgio @32;
     rivian @33;
     volkswagenMeb @34;
+    byd @35;
   }
 
   enum SteerControlType {

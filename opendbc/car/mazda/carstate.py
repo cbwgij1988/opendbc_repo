@@ -69,8 +69,8 @@ class CarState(CarStateBase):
                         cp.vl["DOORS"]["BL"], cp.vl["DOORS"]["BR"]])
 
     # TODO: this should be from 0 - 1.
-    ret.gas = cp.vl["ENGINE_DATA"]["PEDAL_GAS"]
-    ret.gasPressed = ret.gas > 0
+    gas_val = cp.vl["ENGINE_DATA"]["PEDAL_GAS"]
+    ret.gasPressed = gas_val > 0
 
     # Either due to low speed or hands off
     lkas_blocked = cp.vl["STEER_RATE"]["LKAS_BLOCK"] == 1

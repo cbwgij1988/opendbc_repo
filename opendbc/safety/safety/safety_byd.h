@@ -63,41 +63,41 @@ static void byd_rx_hook(const CANPacket_t *to_push) {
 static bool byd_tx_hook(const CANPacket_t *to_send) {
   const TorqueSteeringLimits HAN_DMEV_STEERING_LIMITS = {
     .max_steer = 300,
-    .max_rate_up = 17,
-    .max_rate_down = 17,
+    .max_rate_up = 9,
+    .max_rate_down = 9,
     .max_torque_error = 80,
-    .max_rt_delta = 243,
+    .max_rt_delta = 113,
     .type = TorqueMotorLimited,
   };
   const TorqueSteeringLimits TANG_DMI_STEERING_LIMITS = { //values to be check
     .max_steer = 300,
-    .max_rate_up = 17,
-    .max_rate_down = 17,
-    .max_rt_delta = 243,
+    .max_rate_up = 9,
+    .max_rate_down = 9,
+    .max_rt_delta = 113,
     .max_torque_error = 80,
     .type = TorqueMotorLimited,
   };
   const TorqueSteeringLimits SONG_STEERING_LIMITS = { //values to be check
     .max_steer = 300,
-    .max_rate_up = 17,
-    .max_rate_down = 17,
-    .max_rt_delta = 243,
+    .max_rate_up = 9,
+    .max_rate_down = 9,
+    .max_rt_delta = 113,
     .max_torque_error = 80,
     .type = TorqueMotorLimited,
   };
   const TorqueSteeringLimits QIN_STEERING_LIMITS = { //values to be check
     .max_steer = 300,
-    .max_rate_up = 17,
-    .max_rate_down = 17,
-    .max_rt_delta = 243,
+    .max_rate_up = 9,
+    .max_rate_down = 9,
+    .max_rt_delta = 113,
     .max_torque_error = 80,
     .type = TorqueMotorLimited,
   };
   const TorqueSteeringLimits YUAN_ATTO3_STEERING_LIMITS = { //values to be check
     .max_steer = 300,
-    .max_rate_up = 17,
-    .max_rate_down = 17,
-    .max_rt_delta = 243,
+    .max_rate_up = 9,
+    .max_rate_down = 9,
+    .max_rt_delta = 113,
     .max_torque_error = 80,
     .type = TorqueMotorLimited,
   };
@@ -109,9 +109,8 @@ static bool byd_tx_hook(const CANPacket_t *to_send) {
     int addr = GET_ADDR(to_send);
     if (addr == BYD_CANADDR_ACC_MPC_STATE) {
       int desired_torque = ((GET_BYTE(to_send, 3) & 0x07U) << 8U) | GET_BYTE(to_send, 2);
-      bool steer_req = GET_BIT(to_send, 28U) && byd_eps_cruiseactivated; //LKAS_Active
-      if ( desired_torque >= 1024 )
-        desired_torque -= 2048;
+      desired_torque = to_signed(desired_torque, 11);
+      bool steer_req = GET_BIT(to_send, 28U) || byd_eps_cruiseactivated; //LKAS_Active
       const TorqueSteeringLimits limits = (byd_platform == HAN_TANG_DMEV) ? HAN_DMEV_STEERING_LIMITS :
                                           (byd_platform == TANG_DMI) ? TANG_DMI_STEERING_LIMITS :
                                           (byd_platform == SONG_PLUS_DMI) ? SONG_STEERING_LIMITS :
@@ -161,11 +160,10 @@ static safety_config byd_init(uint16_t param) {
   };
 
   static RxCheck byd_han_dmev_rx_checks[] = {
-    {.msg = {{BYD_CANADDR_ACC_EPS_STATE,    BYD_CANBUS_ESC, 8, .ignore_checksum = true, .ignore_counter = true, .frequency = 50U}, { 0 }, { 0 }}},
-    {.msg = {{BYD_CANADDR_CARSPEED,         BYD_CANBUS_ESC, 8, .ignore_checksum = true, .ignore_counter = true, .frequency = 50U}, { 0 }, { 0 }}},
-    // {.msg = {{BYD_CANADDR_IPB,              BYD_CANBUS_ESC, 8, .ignore_checksum = true, .ignore_counter = true, .frequency = 50U}, { 0 }, { 0 }}},
-    {.msg = {{BYD_CANADDR_DRIVE_STATE,      BYD_CANBUS_ESC, 8, .ignore_checksum = true, .ignore_counter = true, .frequency = 50U}, { 0 }, { 0 }}},
-    {.msg = {{BYD_CANADDR_ACC_HUD_ADAS,     BYD_CANBUS_MPC, 8, .ignore_checksum = true, .ignore_counter = true, .frequency = 50U}, { 0 }, { 0 }}},
+    {.msg = {{BYD_CANADDR_PEDAL,         BYD_CANBUS_ESC, 8, .ignore_checksum = true, .ignore_counter = true, .frequency = 50U}, { 0 }, { 0 }}},
+    {.msg = {{BYD_CANADDR_CARSPEED,      BYD_CANBUS_ESC, 8, .ignore_checksum = true, .ignore_counter = true, .frequency = 50U}, { 0 }, { 0 }}},
+    {.msg = {{BYD_CANADDR_ACC_EPS_STATE, BYD_CANBUS_ESC, 8, .ignore_checksum = true, .ignore_counter = true, .frequency = 50U}, { 0 }, { 0 }}},
+    {.msg = {{BYD_CANADDR_ACC_HUD_ADAS,  BYD_CANBUS_MPC, 8, .ignore_checksum = true, .ignore_counter = true, .frequency = 50U}, { 0 }, { 0 }}},
   };
 
   // static RxCheck byd_yuanplus_atto3_rx_checks[] = {
@@ -192,7 +190,7 @@ static safety_config byd_init(uint16_t param) {
     byd_platform = YUAN_PLUS_DMI_ATTO3;
     static RxCheck byd_yuanplus_atto3_rx_checks[] = {
       {.msg = {{BYD_CANADDR_ACC_EPS_STATE,    BYD_CANBUS_ESC, 8, .ignore_checksum = true, .ignore_counter = true, .frequency = 50U}, { 0 }, { 0 }}},
-      {.msg = {{BYD_CANADDR_IPB,              BYD_CANBUS_ESC, 8, .ignore_checksum = true, .ignore_counter = true, .frequency = 50U}, { 0 }, { 0 }}},
+      {.msg = {{BYD_CANADDR_PEDAL,            BYD_CANBUS_ESC, 8, .ignore_checksum = true, .ignore_counter = true, .frequency = 50U}, { 0 }, { 0 }}},
       {.msg = {{BYD_CANADDR_DRIVE_STATE,      BYD_CANBUS_ESC, 8, .ignore_checksum = true, .ignore_counter = true, .frequency = 50U}, { 0 }, { 0 }}},
     }; //why should I write such an ugly code just to comply with misra?
     ret = BUILD_SAFETY_CFG(byd_yuanplus_atto3_rx_checks, BYD_YUANPLUS_ATTO3_TX_MSGS);

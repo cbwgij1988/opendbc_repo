@@ -41,8 +41,8 @@ class CarState(CarStateBase, MadsCarState):
     ret.standstill = cp.vl["DesiredTorqBrk"]["VehStop_D_Stat"] == 1
 
     # gas pedal
-    ret.gas = cp.vl["EngVehicleSpThrottle"]["ApedPos_Pc_ActlArb"] / 100.
-    ret.gasPressed = ret.gas > 1e-6
+    gas_val = cp.vl["EngVehicleSpThrottle"]["ApedPos_Pc_ActlArb"] / 100.
+    ret.gasPressed = gas_val > 1e-6
 
     # brake pedal
     ret.brake = cp.vl["BrakeSnData_4"]["BrkTot_Tq_Actl"] / 32756.  # torque in Nm

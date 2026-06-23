@@ -30,7 +30,7 @@ class CarState(CarStateBase):
 
     # Gas pedal
     pedal_status = cp.vl["VDM_PropStatus"]["VDM_AcceleratorPedalPosition"]
-    ret.gas = pedal_status / 100.0
+    gas_val = pedal_status / 100.0
     ret.gasPressed = pedal_status > 0
 
     # Brake pedal

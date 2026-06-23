@@ -116,6 +116,11 @@ class CarState(CarStateBase):
         ret.vEgoRaw = float(self.speed_kph * CV.KPH_TO_MS) # KPH to m/s
         ret.vEgo, ret.aEgo = self.update_speed_kf(ret.vEgoRaw)
 
+        # Use gyroscope/accelerometer data for more accurate aEgo
+        axay_ax = cp.vl["AXAY"]["Ax"]
+        axay_offset = cp.vl["AXAY"]["AxOffset"]
+        ret.aEgo = axay_ax + axay_offset
+
         ret.yawRate = cp.vl["YAW_RATE"]["YawRate"] - cp.vl["YAW_RATE"]["YawRateOffset"]
 
         ret.standstill = (speed_raw == 0)
@@ -162,8 +167,8 @@ class CarState(CarStateBase):
         ret.doorOpen = any([cp.vl["BCM"]["FrontLeftDoor"], cp.vl["BCM"]["FrontRightDoor"],
                             cp.vl["BCM"]["RearLeftDoor"],  cp.vl["BCM"]["RearRightDoor"]])
 
-        ret.gas = int(cp.vl["PEDAL"]["AcceleratorPedal"])
-        ret.gasPressed = (ret.gas > 0)
+        gas_val = int(cp.vl["PEDAL"]["AcceleratorPedal"])
+        ret.gasPressed = (gas_val > 0)
 
         ret.cruiseState.available = lkas_isMainSwOn and lkas_config_isAccOn and lkas_hud_AccOn1
         ret.cruiseState.enabled = self.acc_state in (3, 5)
@@ -243,6 +248,7 @@ class CarState(CarStateBase):
             ("PCM_BUTTONS", 20),
             ("DATETIME", 2),
             ("YAW_RATE", 50),
+            ("AXAY", 50),
             ("BELT", 20),
         ]
 
