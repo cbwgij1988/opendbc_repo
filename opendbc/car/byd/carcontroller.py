@@ -126,7 +126,7 @@ class CarController(CarControllerBase):
         self.lkas_active = 0
         self.steer_softstart_limit = 0
 
-      apply_torque = np.clip(apply_torque, -EPS_TORQUE_LIMIT, EPS_TORQUE_LIMIT)
+      apply_torque = int(np.clip(apply_torque, -EPS_TORQUE_LIMIT, EPS_TORQUE_LIMIT))
       self.apply_torque_last = apply_torque
 
       self.mpc_lkas_counter = int(self.mpc_lkas_counter + 1) & 0xF
