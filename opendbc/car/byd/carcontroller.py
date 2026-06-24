@@ -53,57 +53,64 @@ class CarController(CarControllerBase):
         self.first_start = False
 
       apply_torque = 0
+      EPS_TORQUE_LIMIT = 100
 
       if CC.latActive:
-        if self.lkas_active:
-          steer_desire = CC.actuators.torque
+        if CS.out.controlsAllowed:
+          if self.lkas_active:
+            steer_desire = CC.actuators.torque
 
-          if CarControllerParams.USE_STEERING_SPEED_LIMITER: #Use steering angular speed limiter
-            rate_limit = np.interp(CS.out.aEgo, [8.3, 27.8], [132, 64])
-            delta_rate = CS.steeringRateDegAbs - rate_limit
+            if CarControllerParams.USE_STEERING_SPEED_LIMITER: #Use steering angular speed limiter
+              rate_limit = np.interp(CS.out.aEgo, [8.3, 27.8], [132, 64])
+              delta_rate = CS.steeringRateDegAbs - rate_limit
 
-            if delta_rate < 0:
-              self.steerRateLim -= 0.005 * delta_rate
-
-              if delta_rate < -0.05:
-                self.steerRateLimActive = False
-
-              if self.steerRateLim > 1.0:
-                self.steerRateLim = 1.0
-                self.steerRateLimActive = False
-
-            else:
-              if self.steerRateLimActive:
+              if delta_rate < 0:
                 self.steerRateLim -= 0.005 * delta_rate
+
+                if delta_rate < -0.05:
+                  self.steerRateLimActive = False
+
+                if self.steerRateLim > 1.0:
+                  self.steerRateLim = 1.0
+                  self.steerRateLimActive = False
+
               else:
-                self.steerRateLim = steer_desire
-                self.steerRateLimActive = True
+                if self.steerRateLimActive:
+                  self.steerRateLim -= 0.005 * delta_rate
+                else:
+                  self.steerRateLim = steer_desire
+                  self.steerRateLimActive = True
 
-              if self.steerRateLim < 0:
-                self.steerRateLim = 0
+                if self.steerRateLim < 0:
+                  self.steerRateLim = 0
 
-            new_steer_pu = np.clip(steer_desire, -self.steerRateLim, self.steerRateLim)
-          else:
-            new_steer_pu = steer_desire
+              new_steer_pu = np.clip(steer_desire, -self.steerRateLim, self.steerRateLim)
+            else:
+              new_steer_pu = steer_desire
 
-          new_steer = int(round(new_steer_pu * CarControllerParams.STEER_MAX))
+            new_steer = int(round(new_steer_pu * CarControllerParams.STEER_MAX))
 
-          if self.steer_softstart_limit < CarControllerParams.STEER_MAX :
-            self.steer_softstart_limit = self.steer_softstart_limit + CarControllerParams.STEER_SOFTSTART_STEP
-            new_steer = np.clip(new_steer, -self.steer_softstart_limit, self.steer_softstart_limit)
+            if self.steer_softstart_limit < CarControllerParams.STEER_MAX :
+              self.steer_softstart_limit = self.steer_softstart_limit + CarControllerParams.STEER_SOFTSTART_STEP
+              new_steer = np.clip(new_steer, -self.steer_softstart_limit, self.steer_softstart_limit)
 
-          apply_torque = apply_driver_steer_torque_limits(new_steer, self.apply_torque_last,
-                                                          CS.out.steeringTorque, CarControllerParams)
+            apply_torque = apply_driver_steer_torque_limits(new_steer, self.apply_torque_last,
+                                                            CS.out.steeringTorque, CarControllerParams)
 
-        else :
-          if CS.lkas_prepared:
-            self.lkas_active = 1.0
-            self.steerRateLimActive = False
-            self.steerRateLim = 1.0
-            self.lkas_req_prepare = 0
-            self.steer_softstart_limit = 0
-            self.lat_safeoff = 1
-          else:
+          else :
+            if CS.lkas_prepared:
+              self.lkas_active = 1.0
+              self.steerRateLimActive = False
+              self.steerRateLim = 1.0
+              self.lkas_req_prepare = 0
+              self.steer_softstart_limit = 0
+              self.lat_safeoff = 1
+            else:
+              self.lkas_req_prepare = 1
+
+        else:
+          # latActive but controlsAllowed=False (post-brake). Keep prepare alive.
+          if not self.lkas_active:
             self.lkas_req_prepare = 1
 
       elif self.lat_safeoff:
@@ -117,9 +124,9 @@ class CarController(CarControllerBase):
         self.steerRateLimActive = False
         self.steerRateLim = 1.0
         self.lkas_active = 0
-        self.soft_start_torque_limit = 0
         self.steer_softstart_limit = 0
 
+      apply_torque = np.clip(apply_torque, -EPS_TORQUE_LIMIT, EPS_TORQUE_LIMIT)
       self.apply_torque_last = apply_torque
 
       self.mpc_lkas_counter = int(self.mpc_lkas_counter + 1) & 0xF
