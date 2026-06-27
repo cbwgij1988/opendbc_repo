@@ -105,7 +105,7 @@ static bool byd_tx_hook(const CANPacket_t *to_send) {
   bool tx = true;
   int bus = GET_BUS(to_send);
 
-  if (bus == BYD_CANBUS_ESC) {
+  if ((bus == BYD_CANBUS_ESC) || (bus == BYD_CANBUS_MPC)) {
     int addr = GET_ADDR(to_send);
     if (addr == BYD_CANADDR_ACC_MPC_STATE) {
       int desired_torque = ((GET_BYTE(to_send, 3) & 0x07U) << 8U) | GET_BYTE(to_send, 2);
@@ -149,13 +149,17 @@ static safety_config byd_init(uint16_t param) {
 
   static const CanMsg BYD_HAN_DMEV_TX_MSGS[] = {
     {BYD_CANADDR_ACC_CMD,         BYD_CANBUS_ESC, 8, false},
+    {BYD_CANADDR_ACC_CMD,         BYD_CANBUS_MPC, 8, false},
     {BYD_CANADDR_ACC_MPC_STATE,   BYD_CANBUS_ESC, 8, true},
+    {BYD_CANADDR_ACC_MPC_STATE,   BYD_CANBUS_MPC, 8, true},
     {BYD_CANADDR_ACC_EPS_STATE,   BYD_CANBUS_MPC, 8, false},
   };
 
   static const CanMsg BYD_YUANPLUS_ATTO3_TX_MSGS[] = {
     {BYD_CANADDR_ACC_CMD,         BYD_CANBUS_ESC, 8, false},
+    {BYD_CANADDR_ACC_CMD,         BYD_CANBUS_MPC, 8, false},
     {BYD_CANADDR_ACC_MPC_STATE,   BYD_CANBUS_ESC, 8, true},
+    {BYD_CANADDR_ACC_MPC_STATE,   BYD_CANBUS_MPC, 8, true},
     {BYD_CANADDR_ACC_EPS_STATE,   BYD_CANBUS_MPC, 8, false},
   };
 
