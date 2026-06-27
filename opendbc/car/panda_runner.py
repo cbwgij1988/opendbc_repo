@@ -1,4 +1,5 @@
 import time
+import logging
 from contextlib import AbstractContextManager
 
 from panda import Panda
@@ -6,10 +7,15 @@ from opendbc.car.car_helpers import get_car
 from opendbc.car.can_definitions import CanData
 from opendbc.car.structs import CarParams, CarControl
 
+logger = logging.getLogger(__name__)
+
 class PandaRunner(AbstractContextManager):
   def __enter__(self):
     self.p = Panda()
     self.p.reset()
+
+    self._last_tx_overflow = 0
+    self._tx_overflow_warning = False
 
     # setup + fingerprinting
     self.p.set_safety_mode(CarParams.SafetyModel.elm327, 1)
@@ -45,7 +51,18 @@ class PandaRunner(AbstractContextManager):
     return cs
 
   def write(self, cc: CarControl) -> None:
-    if cc.enabled and not self.p.health()['controls_allowed']:
+    health = self.p.health()
+
+    tx_overflow = health['tx_buffer_overflow']
+    if tx_overflow > self._last_tx_overflow:
+      logger.warning(f"CAN TX buffer overflow detected: {tx_overflow - self._last_tx_overflow} new drops (total: {tx_overflow})")
+      self._tx_overflow_warning = True
+    elif self._tx_overflow_warning and tx_overflow == self._last_tx_overflow:
+      logger.info("CAN TX buffer overflow cleared")
+      self._tx_overflow_warning = False
+    self._last_tx_overflow = tx_overflow
+
+    if cc.enabled and not health['controls_allowed']:
       # prevent the car from faulting. print a warning?
       cc = CarControl(enabled=False)
     _, can_sends = self.CI.apply(cc)

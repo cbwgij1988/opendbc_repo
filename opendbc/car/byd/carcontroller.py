@@ -43,7 +43,13 @@ class CarController(CarControllerBase):
   def update(self, CC, CC_SP, CS, now_nanos):
     can_sends = []
 
-    if (self.frame - self.last_steer_frame) >= CarControllerParams.STEER_STEP:
+    steer_step = CarControllerParams.STEER_STEP
+    acc_step = CarControllerParams.ACC_STEP
+    if not CC.enabled:
+      steer_step *= 2
+      acc_step *= 2
+
+    if (self.frame - self.last_steer_frame) >= steer_step:
 
       #Resolve counter mismatch problem
       if self.first_start:
@@ -135,7 +141,7 @@ class CarController(CarControllerBase):
                                               CS.mpc_laks_output, CS.mpc_laks_reqprepare, CS.mpc_laks_active,
                                               True, self.eps_fake318_counter))
 
-    if (self.frame + 1 - self.last_acc_frame) >= CarControllerParams.ACC_STEP:
+    if (self.frame + 1 - self.last_acc_frame) >= acc_step:
       accel = np.clip(CC.actuators.accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX)
 
       if CC.longActive :
