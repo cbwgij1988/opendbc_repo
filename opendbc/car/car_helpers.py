@@ -83,7 +83,8 @@ def can_fingerprint(can_recv: CanRecvCallable) -> tuple[str | None, dict[int, di
 # **** for use live only ****
 def fingerprint(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_multiplexing: ObdCallback, num_pandas: int,
                 cached_params: CarParamsT | None,
-                fixed_fingerprint: str | None) -> tuple[str | None, dict, str, list[CarParams.CarFw], CarParams.FingerprintSource, bool]:
+                fixed_fingerprint: str | None,
+                params: object = None) -> tuple[str | None, dict, str, list[CarParams.CarFw], CarParams.FingerprintSource, bool]:
   fixed_fingerprint = fixed_fingerprint or os.environ.get('FINGERPRINT', "")
   skip_fw_query = os.environ.get('SKIP_FW_QUERY', False)
   disable_fw_cache = os.environ.get('DISABLE_FW_CACHE', False)
@@ -139,8 +140,14 @@ def fingerprint(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_mu
     exact_match = exact_fw_match
 
   if fixed_fingerprint:
-    car_fingerprint = fixed_fingerprint
-    source = CarParams.FingerprintSource.fixed
+    # If CAN/FW fingerprint clearly identifies a different car, clear stale override
+    if car_fingerprint and car_fingerprint != fixed_fingerprint:
+      carlog.warning(f"CarPlatformBundle override {fixed_fingerprint} differs from detected {car_fingerprint}, clearing stale override")
+      if params is not None:
+        params.remove("CarPlatformBundle")
+    else:
+      car_fingerprint = fixed_fingerprint
+      source = CarParams.FingerprintSource.fixed
 
   carlog.error({"event": "fingerprinted", "car_fingerprint": str(car_fingerprint), "source": source, "fuzzy": not exact_match,
                 "cached": cached, "fw_count": len(car_fw), "ecu_responses": list(ecu_rx_addrs), "vin_rx_addr": vin_rx_addr,
@@ -150,9 +157,10 @@ def fingerprint(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_mu
 
 
 def get_car(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_multiplexing: ObdCallback, experimental_long_allowed: bool,
-            num_pandas: int = 1, cached_params: CarParamsT | None = None, fixed_fingerprint: str | None = None):
+            num_pandas: int = 1, cached_params: CarParamsT | None = None, fixed_fingerprint: str | None = None,
+            params: object = None):
   candidate, fingerprints, vin, car_fw, source, exact_match = fingerprint(can_recv, can_send, set_obd_multiplexing, num_pandas, cached_params,
-                                                                          fixed_fingerprint)
+                                                                           fixed_fingerprint, params)
 
   if candidate is None:
     carlog.error({"event": "car doesn't match any fingerprints", "fingerprints": repr(fingerprints)})
