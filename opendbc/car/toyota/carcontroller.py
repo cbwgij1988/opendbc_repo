@@ -268,8 +268,12 @@ class CarController(CarControllerBase):
         pcm_accel_cmd = float(np.clip(pcm_accel_cmd, self.params.ACCEL_MIN, self.params.ACCEL_MAX))
 
         can_sends.append(toyotacan.create_accel_command(self.packer, pcm_accel_cmd, pcm_cancel_cmd, self.permit_braking, self.standstill_req, lead,
-                                                        CS.acc_type, fcw_alert, self.distance_button))
+                                                         CS.acc_type, fcw_alert, self.distance_button))
         self.accel = pcm_accel_cmd
+
+      # clear PCM stored set speed when canceling, prevents LTA/LKAS dashboard fault on gear P
+      if pcm_cancel_cmd and self.CP.carFingerprint not in UNSUPPORTED_DSU_CAR and not (self.CP.flags & ToyotaFlags.SECOC.value):
+        can_sends.append(toyotacan.create_acc_cancel_command(self.packer))
 
     else:
       # we can spam can to cancel the system even if we are using lat only control
@@ -278,6 +282,8 @@ class CarController(CarControllerBase):
           can_sends.append(toyotacan.create_acc_cancel_command(self.packer))
         else:
           can_sends.append(toyotacan.create_accel_command(self.packer, 0, pcm_cancel_cmd, True, False, lead, CS.acc_type, False, self.distance_button))
+          # clear PCM stored set speed on cancel
+          can_sends.append(toyotacan.create_acc_cancel_command(self.packer))
 
     # *** hud ui ***
     if self.CP.carFingerprint != CAR.TOYOTA_PRIUS_V:
