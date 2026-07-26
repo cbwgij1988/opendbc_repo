@@ -85,7 +85,7 @@ def fingerprint(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_mu
                 cached_params: CarParamsT | None,
                 fixed_fingerprint: str | None,
                 params: object = None) -> tuple[str | None, dict, str, list[CarParams.CarFw], CarParams.FingerprintSource, bool]:
-  fixed_fingerprint = fixed_fingerprint or os.environ.get('FINGERPRINT', "")
+  fixed_fingerprint = os.environ.get('FINGERPRINT') or fixed_fingerprint
   skip_fw_query = os.environ.get('SKIP_FW_QUERY', False)
   disable_fw_cache = os.environ.get('DISABLE_FW_CACHE', False)
   ecu_rx_addrs = set()
@@ -140,14 +140,12 @@ def fingerprint(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_mu
     exact_match = exact_fw_match
 
   if fixed_fingerprint:
-    # If CAN/FW fingerprint clearly identifies a different car, clear stale override
     if car_fingerprint and car_fingerprint != fixed_fingerprint:
       carlog.warning(f"CarPlatformBundle override {fixed_fingerprint} differs from detected {car_fingerprint}, clearing stale override")
       if params is not None:
         params.remove("CarPlatformBundle")
-    else:
-      car_fingerprint = fixed_fingerprint
-      source = CarParams.FingerprintSource.fixed
+    car_fingerprint = fixed_fingerprint
+    source = CarParams.FingerprintSource.fixed
 
   carlog.error({"event": "fingerprinted", "car_fingerprint": str(car_fingerprint), "source": source, "fuzzy": not exact_match,
                 "cached": cached, "fw_count": len(car_fw), "ecu_responses": list(ecu_rx_addrs), "vin_rx_addr": vin_rx_addr,
