@@ -348,7 +348,6 @@ void safety_tick(const safety_config *cfg) {
       cfg->rx_checks[i].status.lagging = lagging;
       if (lagging) {
         controls_allowed = false;
-        mads_exit_controls(MADS_DISENGAGE_REASON_LAG);
       }
 
       if (lagging || !is_msg_valid(cfg->rx_checks, i)) {
