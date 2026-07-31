@@ -134,9 +134,14 @@ inline void m_update_control_state(void) {
 }
 
 inline void mads_heartbeat_engaged_check(void) {
-  if (controls_allowed_lateral && !heartbeat_engaged_mads) {
+  // Only check when MADS system is enabled. The heartbeat is sent at ~10Hz by pandad,
+  // while this check runs at 8Hz. On lateral engagement the firmware sets
+  // controls_allowed_lateral immediately (from CAN button), but the OP-side heartbeat
+  // can lag by up to one cycle (~100ms). Require several consecutive mismatches
+  // (~1s) before disengaging to tolerate this normal startup race.
+  if (m_mads_state.system_enabled && controls_allowed_lateral && !heartbeat_engaged_mads) {
     heartbeat_engaged_mads_mismatches += 1U;
-    if (heartbeat_engaged_mads_mismatches >= 3U) {
+    if (heartbeat_engaged_mads_mismatches >= 8U) {
       mads_exit_controls(MADS_DISENGAGE_REASON_HEARTBEAT_ENGAGED_MISMATCH);
     }
   } else {
