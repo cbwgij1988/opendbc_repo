@@ -180,7 +180,7 @@ def create_bsm_polling_status(lr_blindspot):
 # auto brake hold
 def create_brake_hold_command(packer, frame, pre_collision_2, brake_hold_active):
   # forward PRE_COLLISION_2 when auto brake hold is not active
-  values = {s: pre_collision_2[s] for s in [
+  values = {s: pre_collision_2.get(s, 0) for s in [
     "DSS1GDRV",
     "DS1STAT2",
     "DS1STBK2",

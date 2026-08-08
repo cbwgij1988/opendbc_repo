@@ -272,7 +272,7 @@ class CarState(CarStateBase, CarStateExt):
       ret.leftBlindspot, ret.rightBlindspot = self.sp_get_enhanced_bsm(cp)
 
     if self.CP_SP.flags & ToyotaFlagsSP.SP_AUTO_BRAKE_HOLD:
-      self.pre_collision_2 = copy.copy(cp_cam.vl["PRE_COLLISION_2"])
+      self.pre_collision_2 = copy.copy(cp_cam.vl.get("PRE_COLLISION_2", {}))
 
     self.frame += 1
 
