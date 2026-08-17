@@ -24,10 +24,14 @@ AccelPersonality = custom.LongitudinalPlanSP.AccelerationPersonality
 #     if using the other control command, goes directly to 3 after 1.5 seconds
 # - initializing: LTA can report 0 as long as STEER_TORQUE_SENSOR->STEER_ANGLE_INITIALIZING is 1,
 #     and is a catch-all for LKA
-TEMP_STEER_FAULTS = (0, 9, 11, 21, 25)
+# Note: 9/21/25 are high steer-rate/angle faults triggered by sharp turns that clear
+# immediately; they are not reported as temporary faults to avoid false-positive
+# "Steering Temporarily Unavailable" warnings during cornering.
+TEMP_STEER_FAULTS = (0, 11)
 # - lka/lta msg drop out: 3 (recoverable)
 # - prolonged high driver torque: 17 (permanent)
 PERM_STEER_FAULTS = (3, 17)
+PERM_STEER_FAULT_DEBOUNCE_FRAMES = 10
 
 
 class CarState(CarStateBase, CarStateExt):
@@ -59,6 +63,7 @@ class CarState(CarStateBase, CarStateExt):
     self.lkas_hud = {}
     self.gvc = 0.0
     self.secoc_synchronization = None
+    self.perm_steer_fault_counter = 0
 
     self.enhanced_bsm = EnhancedBsmCarState(CP, CP_SP)
 
@@ -178,7 +183,15 @@ class CarState(CarStateBase, CarStateExt):
 
     # Check EPS LKA/LTA fault status
     ret.steerFaultTemporary = cp.vl["EPS_STATUS"]["LKA_STATE"] in TEMP_STEER_FAULTS
-    ret.steerFaultPermanent = cp.vl["EPS_STATUS"]["LKA_STATE"] in PERM_STEER_FAULTS
+
+    # Debounce permanent faults: require N consecutive frames before triggering
+    # to filter transient LKA_STATE=3/17 glitches.
+    lka_perm_fault = cp.vl["EPS_STATUS"]["LKA_STATE"] in PERM_STEER_FAULTS
+    if lka_perm_fault:
+      self.perm_steer_fault_counter += 1
+    else:
+      self.perm_steer_fault_counter = 0
+    ret.steerFaultPermanent = self.perm_steer_fault_counter >= PERM_STEER_FAULT_DEBOUNCE_FRAMES
 
     if self.CP.steerControlType == SteerControlType.angle:
       ret.steerFaultTemporary = ret.steerFaultTemporary or cp.vl["EPS_STATUS"]["LTA_STATE"] in TEMP_STEER_FAULTS
