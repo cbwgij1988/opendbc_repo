@@ -246,6 +246,10 @@ class CarInterfaceBase(ABC, CarInterfaceBaseSP):
     ret.steerRatioRear = 0.  # no rear steering, at least on the listed cars aboveA
     ret.openpilotLongitudinalControl = False
     ret.stopAccel = -2.0
+    ret.deprecated.stoppingDecelRate = 0.8 # m/s^2/s while trying to stop
+    ret.deprecated.vEgoStopping = 0.5
+    ret.deprecated.vEgoStarting = 0.5
+    ret.deprecated.startAccel = 0.5
     ret.longitudinalTuning.kpBP = [0.]
     ret.longitudinalTuning.kpV = [0.]
     ret.longitudinalTuning.kiBP = [0.]
