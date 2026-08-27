@@ -192,11 +192,16 @@ class CarController(CarControllerBase):
         self.standstill_req = False
     else:
       if not self.CP.flags & ToyotaFlags.HYBRID.value:
-        should_resume = actuators.accel > 0
-        if should_resume:
-          self.standstill_req = False
-        if not should_resume and CS.out.cruiseState.standstill:
+        # Gasoline (non-hybrid) cars don't hold their own brake at a stop the way
+        # hybrids do, so latch the PCM standstill hold (RELEASE_STANDSTILL=0) while
+        # actually stopped -- regardless of cruise state -- to prevent the car from
+        # creeping forward against the hold. Only release on a genuine resume request
+        # (positive accel past a small hysteresis threshold) or when the driver is on
+        # the gas, so accel jitter around 0 no longer makes it flap/re-apply the brake.
+        if CS.out.standstill and not actuators.accel > 0.15 and not CS.out.gasPressed:
           self.standstill_req = True
+        else:
+          self.standstill_req = False
 
     self.last_standstill = CS.out.standstill
 
