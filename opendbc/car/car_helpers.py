@@ -85,7 +85,7 @@ def can_fingerprint(can_recv: CanRecvCallable) -> tuple[str | None, dict[int, di
 # **** for use live only ****
 def fingerprint(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_multiplexing: ObdCallback,
                 cached_params: CarParamsT | None,
-                fixed_fingerprint: str | None) -> tuple[str | None, dict, str, list[CarParams.CarFw], CarParams.FingerprintSource, bool]:
+                fixed_fingerprint: str | None, known_vehicles: dict | None = None) -> tuple[str | None, dict, str, list[CarParams.CarFw], CarParams.FingerprintSource, bool]:
   fixed_fingerprint = fixed_fingerprint or os.environ.get('FINGERPRINT', "")
   skip_fw_query = os.environ.get('SKIP_FW_QUERY', False)
   disable_fw_cache = os.environ.get('DISABLE_FW_CACHE', False)
@@ -144,6 +144,24 @@ def fingerprint(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_mu
     car_fingerprint = fixed_fingerprint
     source = CarParams.FingerprintSource.fixed
 
+  # VIN 优先：命中已知车辆清单（VIN 前缀 -> platform）则覆盖其它识别结果。
+  # 匹配 key 使用 VIN 前 9 位（WMI+VDS），唯一确定厂家/车系/车身/发动机，
+  # 用于多台车（含硬件升级为 TSS2 的车）之间避免互相干扰误识别。
+  if vin in (known_vehicles or {}):
+    vin_platform = known_vehicles[vin].get("platform")
+    if vin_platform in interfaces:
+      carlog.warning("VIN 优先: %s -> %s", vin, vin_platform)
+      car_fingerprint = vin_platform
+      source = CarParams.FingerprintSource.vin
+      exact_match = True
+  elif len(vin) >= 9 and (vin[:9] in (known_vehicles or {})):
+    vin_platform = known_vehicles[vin[:9]].get("platform")
+    if vin_platform in interfaces:
+      carlog.warning("VIN 优先(前缀): %s -> %s", vin[:9], vin_platform)
+      car_fingerprint = vin_platform
+      source = CarParams.FingerprintSource.vin
+      exact_match = True
+
   carlog.error({"event": "fingerprinted", "car_fingerprint": str(car_fingerprint), "source": source, "fuzzy": not exact_match,
                 "cached": cached, "fw_count": len(car_fw), "ecu_responses": list(ecu_rx_addrs), "vin_rx_addr": vin_rx_addr,
                 "vin_rx_bus": vin_rx_bus, "fingerprints": repr(finger), "fw_query_time": fw_query_time})
@@ -153,9 +171,10 @@ def fingerprint(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_mu
 
 def get_car(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_multiplexing: ObdCallback, alpha_long_allowed: bool,
             is_release: bool, cached_params: CarParamsT | None = None,
-            fixed_fingerprint: str | None = None, init_params_list_sp: list[dict[str, str]] | None = None, is_release_sp: bool = False):
+            fixed_fingerprint: str | None = None, init_params_list_sp: list[dict[str, str]] | None = None, is_release_sp: bool = False,
+            known_vehicles: dict | None = None):
   candidate, fingerprints, vin, car_fw, source, exact_match = fingerprint(can_recv, can_send, set_obd_multiplexing, cached_params,
-                                                                          fixed_fingerprint)
+                                                                          fixed_fingerprint, known_vehicles)
 
   if candidate is None:
     carlog.error({"event": "car doesn't match any fingerprints", "fingerprints": repr(fingerprints)})

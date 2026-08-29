@@ -713,6 +713,7 @@ struct CarParams {
     can @0;
     fw @1;
     fixed @2;
+    vin @3;
   }
 
   enum NetworkLocation {
