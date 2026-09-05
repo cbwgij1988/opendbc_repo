@@ -408,6 +408,19 @@ struct CarControl {
     leftLaneDepart @9: Bool;
     leadDistanceBars @10: Int8;  # 1-3: 1 is closest, 3 is farthest. some ports may utilize 2-4 bars instead
 
+    # CarrotPilot HUD fields
+    activeCarrot @11 :Int16;
+    leadDistance @12 :Float32;
+    leadRelSpeed @13 :Float32;
+    leadDPath @14 :Float32;
+    leadRadar @15 :Int16;
+    modelDesire @16 :Int16;
+    atcDistance @17 :Float32;
+    leadLeftDist @18 :Float32;
+    leadRightDist @19 :Float32;
+    leadLeftLat @20 :Float32;
+    leadRightLat @21 :Float32;
+
     # not used with the dash, TODO: separate structs for dash UI and device UI
     audibleAlert @5: AudibleAlert;
 
