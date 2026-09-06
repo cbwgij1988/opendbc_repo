@@ -128,6 +128,15 @@ class CarController(CarControllerBase):
     if not lat_active:
       apply_torque = 0
 
+    # sunnypilot-pc(PC): the dash LTA blue (BARRIERS bit) and STEER_REQUEST must
+    # reflect torque we actually output, not mere intent. Previously the marker
+    # stayed lit while torque was zeroed (e.g. silent MADS disable or override),
+    # reading "steering" while nothing steered. Tie request + indicator to
+    # apply_torque: no positive torque on the wire => no blue, no request.
+    if apply_torque == 0:
+      apply_steer_req = False
+    self.hud_barriers = apply_torque != 0
+
     # *** steer angle ***
     if self.CP.steerControlType == SteerControlType.angle:
       # If using LTA control, disable LKA and set steering angle command
@@ -307,7 +316,7 @@ class CarController(CarControllerBase):
       if self.frame % 20 == 0 or send_ui:
         can_sends.append(toyotacan.create_ui_command(self.packer, steer_alert, pcm_cancel_cmd, hud_control.leftLaneVisible,
                                                      hud_control.rightLaneVisible, hud_control.leftLaneDepart,
-                                                     hud_control.rightLaneDepart, CC.latActive, CS.lkas_hud))
+                                                     hud_control.rightLaneDepart, self.hud_barriers, CS.lkas_hud))
 
       if (self.frame % 100 == 0 or send_ui) and (self.CP.enableDsu or self.CP.flags & ToyotaFlags.DISABLE_RADAR.value):
         can_sends.append(toyotacan.create_fcw_command(self.packer, fcw_alert))
