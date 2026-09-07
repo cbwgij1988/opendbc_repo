@@ -112,10 +112,13 @@ def apply_dist_to_meas_limits(val, val_last, val_meas,
   return float(val)
 
 
-def apply_meas_steer_torque_limits(apply_torque, apply_torque_last, motor_torque, LIMITS):
+def apply_meas_steer_torque_limits(apply_torque, apply_torque_last, motor_torque, LIMITS, steer_error_max: int | None = None):
+  # some (sunnypilot) modes utilize a speed-scaled error max
+  if steer_error_max is None:
+    steer_error_max = LIMITS.STEER_ERROR_MAX
   return int(round(apply_dist_to_meas_limits(apply_torque, apply_torque_last, motor_torque,
                                              LIMITS.STEER_DELTA_UP, LIMITS.STEER_DELTA_DOWN,
-                                             LIMITS.STEER_ERROR_MAX, LIMITS.STEER_MAX)))
+                                             steer_error_max, LIMITS.STEER_MAX)))
 
 
 def apply_std_steer_angle_limits(apply_angle: float, apply_angle_last: float, v_ego: float, steering_angle: float,
