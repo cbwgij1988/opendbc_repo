@@ -68,25 +68,19 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     self.params = CarControllerParams(self.CP)
     self.last_torque = 0
     self.last_angle = 0
-    self.stuck_frames = 0
-    self.stuck_reset_frames = 0
-
-    # sunnypilot-pc: low-speed no-return-to-center mitigation.
-    # Widen the steer meas window below ~12 m/s so a saturated command can cross
-    # the EPS friction/stiction threshold that the stock +/-STEER_ERROR_MAX pins it
-    # under; auto-zero + re-accumulate clears the EPS windup / request edge.
-    self.STEER_ERROR_MAX_SPEED_BP = [0., 8., 12.]
-    self.STEER_ERROR_MAX_SPEED_V = [float(self.params.STEER_MAX), float(self.params.STEER_MAX), float(self.params.STEER_ERROR_MAX)]
-    self.STEER_STUCK_RATE_DEG = 4.0   # wheel essentially still (deg/s)
-    self.STEER_STUCK_SPEED = 12.0     # deadlock logic only at low speed (m/s)
-    self.STEER_STUCK_FRAMES = 100     # ~1s of saturating command with no EPS follow (100Hz loop)
-    self.STEER_STUCK_RESET_FRAMES = 30 # ~0.3s of zeroed torque to reset the EPS request
     self.alert_active = False
+    self.was_steering_pressed = False
+    self.override_release_frames = 0
     self.last_standstill = False
     self.standstill_req = False
     self.permit_braking = True
     self.steer_rate_counter = 0
     self.distance_button = 0
+
+    # sunnypilot-pc: speed-scaled STEER_ERROR_MAX for low-speed steering.
+    # At low speed, widen the window so commanded torque can overcome EPS friction.
+    self.STEER_ERROR_MAX_SPEED_BP = [0., 8., 12.]
+    self.STEER_ERROR_MAX_SPEED_V = [float(self.params.STEER_MAX), float(self.params.STEER_ERROR_MAX), float(self.params.STEER_ERROR_MAX)]
 
     # *** start long control state ***
     self.long_pid = get_long_tune(self.CP, self.params)
@@ -120,6 +114,11 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     pcm_cancel_cmd = CC.cruiseControl.cancel
     lat_active = CC.latActive and abs(CS.out.steeringTorque) < MAX_USER_TORQUE
 
+    # sunnypilot-pc: pure torque control for all TSS2 cars (like dragonpilot beta2).
+    # The +/-STEER_ERROR_MAX window at low speed limits applied torque to ~1/3,
+    # but the EPS internal PID still tracks the torque command and can reach ~270 deg.
+    # Speed-scaled STEER_ERROR_MAX helps overcome low-speed stiction.
+
     if len(CC.orientationNED) == 3:
       self.pitch.update(CC.orientationNED[1])
       self.pitch_hp.update(CC.orientationNED[1])
@@ -142,63 +141,38 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     # *** steer torque ***
     new_torque = int(round(actuators.torque * self.params.STEER_MAX))
 
-    # sunnypilot-pc: no-return-to-center deadlock fix.
-    # Root cause: at low speed, EPS/steering friction stops the wheel from
-    # tracking the commanded torque, so the measured EPS torque stays small and
-    # the +/-STEER_ERROR_MAX window pins the applied torque far below the
-    # saturated command. The command never crosses the friction threshold, so
-    # the car never returns to center. Two mitigations:
-    #  1) speed-scaled STEER_ERROR_MAX below ~12 m/s, so low-speed stiction can
-    #     be overcome while keeping the stock window at speed.
-    #  2) deadlock detection: if the command saturates while measured torque is
-    #     tiny and the wheel barely moves, zero the torque for a short burst and
-    #     let it re-accumulate (mirrors the manual cancel+re-enable that clears
-    #     the EPS windup / resets the request edge every time).
+    # sunnypilot-pc: speed-scaled STEER_ERROR_MAX + override-release reset.
+    # At low speed, widen the +/-STEER_ERROR_MAX window so the commanded torque
+    # can overcome EPS friction/stiction. The EPS internal PID tracks the torque
+    # command and can sustain large steering angles (~270 deg).
+    # When the user releases override, briefly zero torque (1 frame) to help
+    # EPS internal state recover from saturation, enabling immediate re-engagement.
     steer_error_max = int(np.interp(CS.out.vEgo, self.STEER_ERROR_MAX_SPEED_BP, self.STEER_ERROR_MAX_SPEED_V))
     apply_torque = apply_meas_steer_torque_limits(new_torque, self.last_torque, CS.out.steeringTorqueEps, self.params,
-                                                  steer_error_max=steer_error_max)
+                                                   steer_error_max=steer_error_max)
 
     # >100 degree/sec steering fault prevention
     self.steer_rate_counter, apply_steer_req = common_fault_avoidance(abs(CS.out.steeringRateDeg) >= MAX_STEER_RATE, lat_active,
                                                                       self.steer_rate_counter, MAX_STEER_RATE_FRAMES)
 
+    # sunnypilot-pc: on override release, zero torque for 1 frame to reset EPS internal state.
+    # This prevents the "wait several seconds to recover" issue after manual takeover.
+    if CS.out.steeringPressed and not self.was_steering_pressed:
+      self.override_release_frames = 2
+    self.was_steering_pressed = CS.out.steeringPressed
+
+    if self.override_release_frames > 0:
+      self.override_release_frames -= 1
+      apply_torque = 0
+
     if not lat_active:
       apply_torque = 0
 
-    # deadlock detector: saturating command, EPS not following, wheel ~still.
-    # Leaky integration tolerates the occasional torqEps spike (few % of frames)
-    # that would reset a strict consecutive counter.
-    stuck = (lat_active and
-             abs(new_torque) >= 0.9 * self.params.STEER_MAX and
-             abs(CS.out.steeringTorqueEps) < 0.6 * self.params.STEER_ERROR_MAX and
-             abs(CS.out.steeringRateDeg) < self.STEER_STUCK_RATE_DEG and
-             CS.out.vEgo < self.STEER_STUCK_SPEED)
-
-    if stuck:
-      self.stuck_frames += 1
-    else:
-      self.stuck_frames = max(0, self.stuck_frames - 2)
-
-    if self.stuck_frames >= self.STEER_STUCK_FRAMES:
-      # zero torque (drops STEER_REQUEST via the apply_torque==0 gate below),
-      # resetting the EPS internal tracking; re-accumulate from 0 afterwards
-      self.stuck_reset_frames = self.STEER_STUCK_RESET_FRAMES
-      self.stuck_frames = 0
-
-    if self.stuck_reset_frames > 0:
-      self.stuck_reset_frames -= 1
-      apply_torque = 0
-
-    # sunnypilot-pc: dash LTA blue (BARRIERS) and STEER_REQUEST reflect actual
-    # applied torque, not mere intent. Previously the marker stayed lit while
-    # torque was zeroed (e.g. silent MADS disable or override), reading "steering"
-    # while nothing steered. Tie request + indicator to apply_torque: no torque on
-    # the wire => no request, no blue.
-    if apply_torque == 0:
-      apply_steer_req = False
     self.hud_barriers = apply_torque != 0
 
     # *** steer angle ***
+    # sunnypilot-pc: only use LTA angle for ANGLE_CONTROL cars (RAV4 TSS2 2023+).
+    # For all other TSS2 cars, use pure torque control like dragonpilot beta2.
     if self.CP.steerControlType == SteerControlType.angle:
       # If using LTA control, disable LKA and set steering angle command
       apply_torque = 0
@@ -230,6 +204,8 @@ class CarController(CarControllerBase, GasInterceptorCarController):
 
     # STEERING_LTA does not seem to allow more rate by sending faster, and may wind up easier
     if self.frame % 2 == 0 and self.CP.carFingerprint in TSS2_CAR:
+      # sunnypilot-pc: only activate LTA for ANGLE_CONTROL cars (RAV4 TSS2 2023+).
+      # For all other TSS2 cars, send LTA with lta_active=False like dragonpilot beta2.
       lta_active = lat_active and self.CP.steerControlType == SteerControlType.angle
       # cut steering torque with TORQUE_WIND_DOWN when either EPS torque or driver torque is above
       # the threshold, to limit max lateral acceleration and for driver torque blending respectively.

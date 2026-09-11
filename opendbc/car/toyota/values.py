@@ -31,6 +31,10 @@ class CarControllerParams:
     # Observed internal torque rate limit on TSS 2.5 Camry and RAV4 is ~1500 units/sec up and down when using LTA
     ([5, 25], [0.3, 0.15]),
     ([5, 25], [0.36, 0.26]),
+    # sunnypilot-pc: TSS2 EPS can sustain up to ~270 deg below ~20 km/h (log shows EPS torque -5000).
+    # Progressively widen the angle ceiling: 270 deg below 10 km/h, ~120 deg at 20 km/h, stock 95 deg at 36+ km/h.
+    [0., 2.8, 5.6, 10.0],
+    [270.0, 270.0, 120.0, 94.9461],
   )
 
   MAX_LTA_DRIVER_TORQUE_ALLOWANCE = 150  # slightly above steering pressed allows some resistance when changing lanes

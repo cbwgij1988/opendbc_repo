@@ -1,6 +1,6 @@
 import math
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from opendbc.car import structs, rate_limit, DT_CTRL, ACCELERATION_DUE_TO_GRAVITY
 from opendbc.car.vehicle_model import VehicleModel
 
@@ -26,6 +26,11 @@ class AngleSteeringLimits:
   STEER_ANGLE_MAX: float
   ANGLE_RATE_LIMIT_UP: tuple[list[float], list[float]]
   ANGLE_RATE_LIMIT_DOWN: tuple[list[float], list[float]]
+  # sunnypilot-pc: progressive angle ceiling. Below ~20 km/h the EPS internal PID can
+  # sustain a larger steering angle (TSS2 EPS reaches ~270 deg). Speed in m/s.
+  # Default keeps stock ceiling; Toyota TSS2 overrides via CarControllerParams.
+  STEER_ANGLE_MAX_SPEED_BP: list[float] = field(default_factory=lambda: [0., 10.0])
+  STEER_ANGLE_MAX_SPEED_V: list[float] = field(default_factory=lambda: [94.9461, 94.9461])
 
 
 @dataclass
@@ -134,7 +139,14 @@ def apply_std_steer_angle_limits(apply_angle: float, apply_angle_last: float, v_
   if not lat_active:
     new_apply_angle = steering_angle
 
-  return float(np.clip(new_apply_angle, -limits.STEER_ANGLE_MAX, limits.STEER_ANGLE_MAX))
+  # sunnypilot-pc: progressive angle ceiling. Below ~20 km/h the EPS internal PID can
+  # sustain a larger steering angle (TSS2 EPS reaches ~270 deg), so widen the ceiling
+  # progressively instead of a fixed cap. Use limits.STEER_ANGLE_MAX_SPEED_BP/V if provided.
+  steer_angle_max = limits.STEER_ANGLE_MAX
+  if hasattr(limits, 'STEER_ANGLE_MAX_SPEED_BP'):
+    steer_angle_max = np.interp(v_ego, limits.STEER_ANGLE_MAX_SPEED_BP, limits.STEER_ANGLE_MAX_SPEED_V)
+
+  return float(np.clip(new_apply_angle, -steer_angle_max, steer_angle_max))
 
 
 def get_max_angle_delta_vm(v_ego_raw: float, VM: VehicleModel, limits):
