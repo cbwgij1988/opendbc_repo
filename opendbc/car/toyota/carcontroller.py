@@ -100,11 +100,13 @@ class CarController(CarControllerBase):
     self.right_last_blindspot_frame = 0
 
     # Auto Brake Hold state
-    if CP_SP.flags & ToyotaFlagsSP.SP_AUTO_BRAKE_HOLD:
-      self.brake_hold_active: bool = False
-      self._brake_hold_counter: int = 0
-      self._brake_hold_reset: bool = False
-      self._prev_brake_pressed: bool = False
+    # NOTE: CP_SP.flags may not have SP_AUTO_BRAKE_HOLD set yet at construction time --
+    # sunnypilot's interface setup sets it later on the shared CP_SP, so these must be
+    # initialized unconditionally or create_auto_brake_hold_messages crashes at runtime.
+    self.brake_hold_active: bool = False
+    self._brake_hold_counter: int = 0
+    self._brake_hold_reset: bool = False
+    self._prev_brake_pressed: bool = False
 
   def update(self, CC, CC_SP, CS, now_nanos):
     actuators = CC.actuators
@@ -246,23 +248,24 @@ class CarController(CarControllerBase):
 
     # on entering standstill, send standstill request for older TSS-P cars
     # that aren't designed to stay engaged at a stop
+    #
+    # NOTE: the previous gasoline-specific standstill-hold latch was removed -- it
+    # latched RELEASE_STANDSTILL=0 (PCM standstill hold) while stopped, which made
+    # the car feel dragged/locked at startup and only lurch free when released.
     if self.CP.carFingerprint not in NO_STOP_TIMER_CAR:
       if CS.out.standstill and not self.last_standstill and not (self.CP_SP.flags & ToyotaFlagsSP.STOP_AND_GO_HACK):
         self.standstill_req = True
       if CS.pcm_acc_status != 8:
         self.standstill_req = False
     else:
-      if not self.CP.flags & ToyotaFlags.HYBRID.value:
-        # Gasoline (non-hybrid) cars don't hold their own brake at a stop the way
-        # hybrids do, so latch the PCM standstill hold (RELEASE_STANDSTILL=0) while
-        # actually stopped -- regardless of cruise state -- to prevent the car from
-        # creeping forward against the hold. Only release on a genuine resume request
-        # (positive accel past a small hysteresis threshold) or when the driver is on
-        # the gas, so accel jitter around 0 no longer makes it flap/re-apply the brake.
-        if CS.out.standstill and not actuators.accel > 0.15 and not CS.out.gasPressed:
-          self.standstill_req = True
-        else:
-          self.standstill_req = False
+      # Non-hybrid (gasoline) cars: don't latch the PCM standstill hold while
+      # stopped. Only request it on the transition into standstill (edge-triggered),
+      # and clear it once the PCM leaves the ACC stop state. Holding it on continuously
+      # keeps the car braked at a stop, which reads as a drag/lurch on startup.
+      if CS.out.standstill and not self.last_standstill:
+        self.standstill_req = True
+      if CS.pcm_acc_status != 8:
+        self.standstill_req = False
 
     self.last_standstill = CS.out.standstill
 
