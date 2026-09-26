@@ -69,9 +69,6 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     self.last_torque = 0
     self.last_angle = 0
     self.alert_active = False
-    self.was_steering_pressed = False
-    self.override_release_frames = 0
-    self.release_widen_frames = 0
     self.last_standstill = False
     self.standstill_req = False
     self.permit_braking = True
@@ -79,18 +76,12 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     self.distance_button = 0
 
     # sunnypilot-pc: speed-scaled STEER_ERROR_MAX for low-speed steering.
-    # At low speed, widen the window so commanded torque can overcome EPS friction.
+    # Full scale below ~12 m/s so a saturated command stays saturated: while the
+    # driver holds override the applied torque is pinned at STEER_MAX, and on
+    # release last_torque is already at full scale, so the applied torque holds
+    # seamlessly (no recovery ramp) and the car keeps steering itself.
     self.STEER_ERROR_MAX_SPEED_BP = [0., 8., 12.]
-    self.STEER_ERROR_MAX_SPEED_V = [float(self.params.STEER_MAX), float(self.params.STEER_ERROR_MAX), float(self.params.STEER_ERROR_MAX)]
-
-    # sunnypilot-pc: after the driver releases override, the measured EPS torque
-    # (steeringTorqueEps) lags near 0, so the +/-STEER_ERROR_MAX window pins the
-    # applied torque at ~err_max and the car cannot recover steering on a curve.
-    # Temporarily open the window to full scale for RELEASE_WIDEN_FRAMES so the
-    # torque can ramp back up; the rate limit (STEER_DELTA_UP) still applies.
-    # A steering-rate guard keeps the wheel rate below the EPS fault threshold.
-    self.RELEASE_WIDEN_FRAMES = 250      # ~2.5s @ 100Hz
-    self.RELEASE_WIDEN_MAX_RATE = 80.0   # deg/s; don't widen if the wheel is turning this fast
+    self.STEER_ERROR_MAX_SPEED_V = [float(self.params.STEER_MAX), float(self.params.STEER_MAX), float(self.params.STEER_ERROR_MAX)]
 
     # *** start long control state ***
     self.long_pid = get_long_tune(self.CP, self.params)
@@ -125,9 +116,8 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     lat_active = CC.latActive and abs(CS.out.steeringTorque) < MAX_USER_TORQUE
 
     # sunnypilot-pc: pure torque control for all TSS2 cars (like dragonpilot beta2).
-    # The +/-STEER_ERROR_MAX window at low speed limits applied torque to ~1/3,
-    # but the EPS internal PID still tracks the torque command and can reach ~270 deg.
-    # Speed-scaled STEER_ERROR_MAX helps overcome low-speed stiction.
+    # Full-scale window below ~12 m/s keeps a saturated command saturated, so
+    # override release holds the applied torque seamlessly (no recovery ramp).
 
     if len(CC.orientationNED) == 3:
       self.pitch.update(CC.orientationNED[1])
@@ -151,41 +141,18 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     # *** steer torque ***
     new_torque = int(round(actuators.torque * self.params.STEER_MAX))
 
-    # sunnypilot-pc: speed-scaled STEER_ERROR_MAX + override-release reset.
-    # At low speed, widen the +/-STEER_ERROR_MAX window so the commanded torque
-    # can overcome EPS friction/stiction. The EPS internal PID tracks the torque
-    # command and can sustain large steering angles (~270 deg).
-    # When the user releases override, briefly zero torque (1 frame) to help
-    # EPS internal state recover from saturation, enabling immediate re-engagement.
+    # sunnypilot-pc: speed-scaled STEER_ERROR_MAX (full scale below ~12 m/s).
+    # While the driver holds override the applied torque is pinned at STEER_MAX;
+    # on release it holds at full scale (last_torque continuity) so steering
+    # output is seamless. Above 12 m/s the stock +/-STEER_ERROR_MAX window applies.
     steer_error_max = int(np.interp(CS.out.vEgo, self.STEER_ERROR_MAX_SPEED_BP, self.STEER_ERROR_MAX_SPEED_V))
-
-    # sunnypilot-pc: after override release, open the window to full scale for a
-    # short burst so the applied torque can ramp back up (the measured EPS torque
-    # lags near 0 right after release, otherwise the window pins it at ~err_max).
-    # The rate limit (STEER_DELTA_UP) still bounds how fast the torque grows.
-    if self.was_steering_pressed and not CS.out.steeringPressed:
-      self.release_widen_frames = self.RELEASE_WIDEN_FRAMES
-    if self.release_widen_frames > 0:
-      self.release_widen_frames -= 1
-      if abs(CS.out.steeringRateDeg) < self.RELEASE_WIDEN_MAX_RATE:
-        steer_error_max = self.params.STEER_MAX
 
     apply_torque = apply_meas_steer_torque_limits(new_torque, self.last_torque, CS.out.steeringTorqueEps, self.params,
                                                    steer_error_max=steer_error_max)
 
     # >100 degree/sec steering fault prevention
     self.steer_rate_counter, apply_steer_req = common_fault_avoidance(abs(CS.out.steeringRateDeg) >= MAX_STEER_RATE, lat_active,
-                                                                      self.steer_rate_counter, MAX_STEER_RATE_FRAMES)
-
-    # sunnypilot-pc: on override release, zero torque for 1 frame to reset EPS internal state.
-    # This prevents the "wait several seconds to recover" issue after manual takeover.
-    if CS.out.steeringPressed and not self.was_steering_pressed:
-      self.override_release_frames = 2
-    self.was_steering_pressed = CS.out.steeringPressed
-
-    if self.override_release_frames > 0:
-      self.override_release_frames -= 1
-      apply_torque = 0
+                                                                       self.steer_rate_counter, MAX_STEER_RATE_FRAMES)
 
     if not lat_active:
       apply_torque = 0
