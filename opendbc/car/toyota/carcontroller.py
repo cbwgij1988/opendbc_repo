@@ -71,6 +71,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     self.alert_active = False
     self.was_steering_pressed = False
     self.override_release_frames = 0
+    self.release_widen_frames = 0
     self.last_standstill = False
     self.standstill_req = False
     self.permit_braking = True
@@ -81,6 +82,15 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     # At low speed, widen the window so commanded torque can overcome EPS friction.
     self.STEER_ERROR_MAX_SPEED_BP = [0., 8., 12.]
     self.STEER_ERROR_MAX_SPEED_V = [float(self.params.STEER_MAX), float(self.params.STEER_ERROR_MAX), float(self.params.STEER_ERROR_MAX)]
+
+    # sunnypilot-pc: after the driver releases override, the measured EPS torque
+    # (steeringTorqueEps) lags near 0, so the +/-STEER_ERROR_MAX window pins the
+    # applied torque at ~err_max and the car cannot recover steering on a curve.
+    # Temporarily open the window to full scale for RELEASE_WIDEN_FRAMES so the
+    # torque can ramp back up; the rate limit (STEER_DELTA_UP) still applies.
+    # A steering-rate guard keeps the wheel rate below the EPS fault threshold.
+    self.RELEASE_WIDEN_FRAMES = 250      # ~2.5s @ 100Hz
+    self.RELEASE_WIDEN_MAX_RATE = 80.0   # deg/s; don't widen if the wheel is turning this fast
 
     # *** start long control state ***
     self.long_pid = get_long_tune(self.CP, self.params)
@@ -148,6 +158,18 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     # When the user releases override, briefly zero torque (1 frame) to help
     # EPS internal state recover from saturation, enabling immediate re-engagement.
     steer_error_max = int(np.interp(CS.out.vEgo, self.STEER_ERROR_MAX_SPEED_BP, self.STEER_ERROR_MAX_SPEED_V))
+
+    # sunnypilot-pc: after override release, open the window to full scale for a
+    # short burst so the applied torque can ramp back up (the measured EPS torque
+    # lags near 0 right after release, otherwise the window pins it at ~err_max).
+    # The rate limit (STEER_DELTA_UP) still bounds how fast the torque grows.
+    if self.was_steering_pressed and not CS.out.steeringPressed:
+      self.release_widen_frames = self.RELEASE_WIDEN_FRAMES
+    if self.release_widen_frames > 0:
+      self.release_widen_frames -= 1
+      if abs(CS.out.steeringRateDeg) < self.RELEASE_WIDEN_MAX_RATE:
+        steer_error_max = self.params.STEER_MAX
+
     apply_torque = apply_meas_steer_torque_limits(new_torque, self.last_torque, CS.out.steeringTorqueEps, self.params,
                                                    steer_error_max=steer_error_max)
 
