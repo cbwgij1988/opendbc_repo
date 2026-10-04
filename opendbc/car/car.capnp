@@ -174,6 +174,14 @@ struct CarState {
   standstill @18 :Bool;
   wheelSpeeds @2 :WheelSpeeds;
 
+  # Longitudinal specific force from the car's own accelerometer, when the platform publishes it over
+  # CAN (Toyota KINEMATICS ACCEL_X). Unlike aEgo, which is differentiated wheel speed, this is a real
+  # accelerometer reading and therefore carries the gravity component the pose filter needs to observe
+  # pitch and roll. Only set on platforms that publish it; imuValid distinguishes "not published"
+  # from a genuine zero, which is a legitimate reading on a level road.
+  imuAccel @61 :Float32;    # longitudinal, m/s^2, car frame
+  imuValid @62 :Bool;       # imuAccel/yawRate came from the car's IMU this frame and passed sanity checks
+
   gasPressed @4 :Bool;    # this is user pedal only
 
   brakePressed @6 :Bool;  # this is user pedal only
