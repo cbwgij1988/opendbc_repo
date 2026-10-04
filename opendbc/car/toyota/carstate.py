@@ -3,7 +3,7 @@ import copy
 from openpilot.cereal import custom
 from openpilot.common.params import Params
 from opendbc.can import CANDefine, CANParser
-from opendbc.car import Bus, DT_CTRL, create_button_events, structs
+from opendbc.car import Bus, DT_CTRL, ACCELERATION_DUE_TO_GRAVITY, create_button_events, structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.interfaces import CarStateBase
@@ -32,6 +32,12 @@ TEMP_STEER_FAULTS = (0, 11)
 # - prolonged high driver torque: 17 (permanent)
 PERM_STEER_FAULTS = (3, 17)
 PERM_STEER_FAULT_DEBOUNCE_FRAMES = 10
+
+# How many consecutive carState frames the decoded KINEMATICS yaw rate may stay bit-identical before
+# we conclude the ECU is not filling the field in. update() runs at 100 Hz, so 3000 frames is 30 s.
+# Long enough that a genuinely straight road - where a real yaw rate sits on one LSB for minutes -
+# is not mistaken for an empty signal, short enough that a genuinely empty one is caught quickly.
+CAN_IMU_FROZEN_FRAMES = 3000
 
 
 class CarState(CarStateBase, CarStateExt):
@@ -78,6 +84,58 @@ class CarState(CarStateBase, CarStateExt):
     self._accel_profile_init = False
 
     self.frame = 0
+
+    # CAN IMU (KINEMATICS) health tracking, see update_can_imu
+    self._imu_last_yaw = None
+    self._imu_yaw_frozen_frames = 0
+    self._imu_yaw_unpopulated = False
+
+  def update_can_imu(self, ret, cp) -> None:
+    """Publishes the car's own IMU channels (KINEMATICS, 0x24) when they look trustworthy.
+
+    Toyota sends yaw rate and a longitudinal accelerometer on the pt bus, which is enough to keep the
+    pose filter and the car's pitch compensation running when the external IMU is missing. It is not
+    good enough to learn calibration from, so locationd marks this pose as CAN-only and the learners
+    stay paused - see openpilot/selfdrive/locationd/locationd.py.
+
+    Not every Toyota fills these in. An unpopulated signal reads a constant, which is
+    indistinguishable from a single decoded value, so it is detected by the value never changing:
+    a real IMU moves, even on a straight road. Once a signal has been pinned this long we stop
+    reporting it, and we resume by ourselves the moment it moves again - the same
+    detect-then-recover shape as the CH347 handling in sensord.
+    """
+    kin = cp.vl["KINEMATICS"] if "KINEMATICS" in cp.dbc.name_to_msg else None
+    if kin is None or not cp.can_valid:
+      ret.imuValid = False
+      return
+
+    yaw_deg = kin["YAW_RATE"]
+    accel_x = kin["ACCEL_X"]
+
+    # Track how long the decoded value has been bit-identical. One LSB is 0.244 deg/s.
+    if yaw_deg == self._imu_last_yaw:
+      self._imu_yaw_frozen_frames += 1
+    else:
+      self._imu_yaw_frozen_frames = 0
+      self._imu_yaw_unpopulated = False
+    self._imu_last_yaw = yaw_deg
+
+    if self._imu_yaw_frozen_frames > CAN_IMU_FROZEN_FRAMES:
+      self._imu_yaw_unpopulated = True
+    if self._imu_yaw_unpopulated:
+      ret.imuValid = False
+      return
+
+    yaw_rate = yaw_deg * CV.DEG_TO_RAD
+    # 100 deg/s is far beyond any road speed in this gear and well inside the ESP's plausible range;
+    # it only catches a mis-scaled or garbage signal.
+    if not (-100.0 < yaw_deg < 100.0) or abs(accel_x) > ACCELERATION_DUE_TO_GRAVITY * 3:
+      ret.imuValid = False
+      return
+
+    ret.yawRate = yaw_rate
+    ret.imuAccel = accel_x
+    ret.imuValid = True
 
   def update(self, can_parsers) -> tuple[structs.CarState, structs.CarStateSP]:
     cp = can_parsers[Bus.pt]
@@ -151,6 +209,8 @@ class CarState(CarStateBase, CarStateExt):
     ret.vEgoCluster = ret.vEgo * 1.015  # minimum of all the cars
 
     ret.standstill = abs(ret.vEgoRaw) < 1e-3
+
+    self.update_can_imu(ret, cp)
 
     ret.vehicleSensorsInvalid = any(cp.vl["WHEEL_SPEEDS"][f"WHEEL_SPEED_{whl}_FAULT"]
                                     for whl in ("FL", "FR", "RL", "RR"))
@@ -300,6 +360,10 @@ class CarState(CarStateBase, CarStateExt):
   def get_can_parsers(CP, CP_SP):
     pt_messages = [
       ("BLINKERS_STATE", float('nan')),
+      # nan frequency marks the message as "ignore alive": not every Toyota broadcasts 0x24, and a
+      # car that never sends it must still pass the parser's can_valid check. update_can_imu decides
+      # separately whether the values it carries can be trusted.
+      ("KINEMATICS", float('nan')),
     ]
 
     cam_messages = [
