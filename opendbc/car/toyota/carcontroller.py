@@ -11,7 +11,7 @@ from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.toyota import toyotacan
 from opendbc.car.toyota.values import CAR, NO_STOP_TIMER_CAR, TSS2_CAR, \
                                         CarControllerParams, ToyotaFlags, \
-                                        UNSUPPORTED_DSU_CAR
+                                        UNSUPPORTED_DSU_CAR, STEER_THRESHOLD
 from opendbc.can import CANPacker
 from opendbc.sunnypilot.car.toyota.auto_brake_hold import AutoBrakeHoldCarController
 from opendbc.sunnypilot.car.toyota.enhanced_bsm import EnhancedBsmCarController
@@ -39,6 +39,14 @@ MAX_STEER_RATE_FRAMES = 17  # tx control frames needed before torque can be cut
 
 # EPS allows user torque above threshold for 50 frames before permanently faulting
 MAX_USER_TORQUE = 500
+# Driver torque blending. Upstream only drops lateral above MAX_USER_TORQUE, so anywhere below
+# that the car keeps pushing the full commanded torque at a driver who is already turning the
+# wheel. Taper linearly from this value instead, so the car backs off in proportion to how hard
+# the driver is working rather than holding 100% and then cutting out. 150 sits above
+# STEER_THRESHOLD (100) so resting hands cost nothing (39% of latActive frames exceed 100, only
+# 21% exceed 150), and below the 200-315 range a driver actually counter-steers with when
+# unwinding a corner the car is holding too tight.
+USER_TORQUE_BLEND_START = 150
 
 def get_long_tune(CP, params):
   if CP.carFingerprint in TSS2_CAR:
@@ -81,12 +89,21 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     # Widen the steer meas window below ~12 m/s so a saturated command can cross
     # the EPS friction/stiction threshold that the stock +/-STEER_ERROR_MAX pins it
     # under; auto-zero + re-accumulate clears the EPS windup / request edge.
-    self.STEER_ERROR_MAX_SPEED_BP = [0., 8., 12.]
-    self.STEER_ERROR_MAX_SPEED_V = [float(self.params.STEER_MAX), float(self.params.STEER_MAX), float(self.params.STEER_ERROR_MAX)]
+    # Tapered rather than flat to STEER_MAX up to 8 m/s: replaying this window over a
+    # drive log (recorded EPS torque as the meas input) shows the flat version holds
+    # |apply_torque| >= 1400 for 11.1% of frames vs 6.7% tapered, and lifts the mid-corner
+    # average from ~1110 to ~1280. Sustained saturation is the strongest predictor of the
+    # EPS entering its ~2 s high-steer-rate window (EPS_STATUS->LKA_STATE=9): 0.29 entries/s
+    # with |apply_torque| >= 1400 in the previous second vs 0.05/s without. Keeping the
+    # widening full-strength below ~15 km/h preserves the stiction fix it exists for.
+    self.STEER_ERROR_MAX_SPEED_BP = [0., 4., 8., 12.]
+    self.STEER_ERROR_MAX_SPEED_V = [float(self.params.STEER_MAX), 1000., 500., float(self.params.STEER_ERROR_MAX)]
     self.STEER_STUCK_RATE_DEG = 4.0   # wheel essentially still (deg/s)
     self.STEER_STUCK_SPEED = 12.0     # deadlock logic only at low speed (m/s)
+    self.STEER_STUCK_ANGLE_DEG = 30.0 # deadlock only near centre; a corner is not a stuck wheel
     self.STEER_STUCK_FRAMES = 100     # ~1s of saturating command with no EPS follow (100Hz loop)
-    self.STEER_STUCK_RESET_FRAMES = 30 # ~0.3s of zeroed torque to reset the EPS request
+    self.STEER_STUCK_RESET_FRAMES = 30 # ~0.3s of torque release to reset the EPS request
+    self.STEER_STUCK_RAMP = 50        # release rate, units/frame: 1500 -> 0 in exactly 30 frames
 
     # *** start long control state ***
     self.long_pid = get_long_tune(self.CP, self.params)
@@ -169,13 +186,29 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     if not lat_active:
       apply_torque = 0
 
+    # Taper the applied torque as the driver loads the wheel. Without this the car holds the
+    # full commanded torque right through the driver's own steering input and only releases at
+    # MAX_USER_TORQUE; in a drive log the driver counter-steered up to 315 of 500 to unwind a
+    # corner and the command never came down, which is felt as the wheel fighting back.
+    driver_torque = abs(CS.out.steeringTorque)
+    if driver_torque > USER_TORQUE_BLEND_START:
+      blend = np.interp(driver_torque, [float(USER_TORQUE_BLEND_START), float(MAX_USER_TORQUE)], [1.0, 0.0])
+      apply_torque = int(round(apply_torque * blend))
+
     # deadlock detector: saturating command, EPS not following, wheel ~still.
     # Leaky integration tolerates the occasional torqEps spike (few % of frames)
     # that would reset a strict consecutive counter.
+    # Gated to near-centre driving with no driver input, which is the case this detector
+    # exists for (stiction holding a still wheel). Mid-corner the EPS legitimately reports
+    # little assist, and the driver is usually loading the wheel too - in a drive log 22/28
+    # EPS fault windows had |driver torque| over STEER_THRESHOLD with the wheel far off
+    # centre, and releasing torque there is exactly the mid-corner "letting go" complaint.
     stuck = (lat_active and
              abs(new_torque) >= 0.9 * self.params.STEER_MAX and
              abs(CS.out.steeringTorqueEps) < 0.6 * self.params.STEER_ERROR_MAX and
              abs(CS.out.steeringRateDeg) < self.STEER_STUCK_RATE_DEG and
+             abs(CS.out.steeringAngleDeg) < self.STEER_STUCK_ANGLE_DEG and
+             abs(CS.out.steeringTorque) < STEER_THRESHOLD and
              CS.out.vEgo < self.STEER_STUCK_SPEED)
 
     if stuck:
@@ -184,14 +217,16 @@ class CarController(CarControllerBase, GasInterceptorCarController):
       self.stuck_frames = max(0, self.stuck_frames - 2)
 
     if self.stuck_frames >= self.STEER_STUCK_FRAMES:
-      # zero torque (drops STEER_REQUEST via the apply_torque==0 gate below),
-      # resetting the EPS internal tracking; re-accumulate from 0 afterwards
+      # release the torque so the EPS internal tracking resets, then re-accumulate from 0.
+      # Ramped rather than snapped: an instant STEER_MAX -> 0 step is felt as the steering
+      # letting go, and STEER_STUCK_RAMP is sized to reach exactly zero in
+      # STEER_STUCK_RESET_FRAMES so the reset edge still lands on a zero-torque message.
       self.stuck_reset_frames = self.STEER_STUCK_RESET_FRAMES
       self.stuck_frames = 0
 
     if self.stuck_reset_frames > 0:
       self.stuck_reset_frames -= 1
-      apply_torque = 0
+      apply_torque = int(np.clip(0, apply_torque - self.STEER_STUCK_RAMP, apply_torque + self.STEER_STUCK_RAMP))
 
     self.hud_barriers = apply_torque != 0
 

@@ -32,6 +32,14 @@ TEMP_STEER_FAULTS = (0, 11)
 # - prolonged high driver torque: 17 (permanent)
 PERM_STEER_FAULTS = (3, 17)
 PERM_STEER_FAULT_DEBOUNCE_FRAMES = 10
+# LKA_STATE=11 shows up as 3-5 frame blips nested inside the EPS's ~2 s high-steer-rate window
+# (LKA_STATE=9). Each blip drops CC.latActive, resets the lateral controller and zeroes the torque,
+# and the STEER_DELTA_UP ramp then needs ~1 s to get back to full assist - felt as the car letting
+# go mid-corner and pressing back in. 8 frames (80 ms, observed max blip is 5) filters those; a
+# genuine msg-dropout fault sits in 11 for ~2 s, so it is still caught, and 80 ms stays inside the
+# 10 frame permanent-fault debounce that follows. While the EPS is in 11 it is not actuating our
+# torque at all, and the +/-STEER_ERROR_MAX meas window pulls the command down on its own.
+TEMP_STEER_FAULT_DEBOUNCE_FRAMES = 8
 
 # How many consecutive carState frames the decoded KINEMATICS yaw rate may stay bit-identical before
 # we conclude the ECU is not filling the field in. update() runs at 100 Hz, so 3000 frames is 30 s.
@@ -70,6 +78,7 @@ class CarState(CarStateBase, CarStateExt):
     self.gvc = 0.0
     self.secoc_synchronization = None
     self.perm_steer_fault_counter = 0
+    self.temp_steer_fault_counter = 0
 
     self.enhanced_bsm = EnhancedBsmCarState(CP, CP_SP)
 
@@ -241,8 +250,14 @@ class CarState(CarStateBase, CarStateExt):
     # we could use the override bit from dbc, but it's triggered at too high torque values
     ret.steeringPressed = abs(ret.steeringTorque) > STEER_THRESHOLD
 
-    # Check EPS LKA/LTA fault status
-    ret.steerFaultTemporary = cp.vl["EPS_STATUS"]["LKA_STATE"] in TEMP_STEER_FAULTS
+    # Check EPS LKA/LTA fault status. Temporary faults are debounced the same way permanent
+    # faults are, see TEMP_STEER_FAULT_DEBOUNCE_FRAMES.
+    lka_temp_fault = cp.vl["EPS_STATUS"]["LKA_STATE"] in TEMP_STEER_FAULTS
+    if lka_temp_fault:
+      self.temp_steer_fault_counter += 1
+    else:
+      self.temp_steer_fault_counter = 0
+    ret.steerFaultTemporary = self.temp_steer_fault_counter >= TEMP_STEER_FAULT_DEBOUNCE_FRAMES
 
     # Debounce permanent faults: require N consecutive frames before triggering
     # to filter transient LKA_STATE=3/17 glitches.
