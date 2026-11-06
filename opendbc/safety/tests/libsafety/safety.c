@@ -309,6 +309,16 @@ void set_mads_params(bool enable_mads, bool disengage_lateral_on_brake, bool pau
   mads_set_alternative_experience(&alternative_experience);
 }
 
+void set_mads_auto_engage_lateral(bool c){
+  if (c) {
+    alternative_experience |= ALT_EXP_MADS_AUTO_ENGAGE_LATERAL;
+  } else {
+    alternative_experience &= ~ALT_EXP_MADS_AUTO_ENGAGE_LATERAL;
+  }
+
+  mads_set_alternative_experience(&alternative_experience);
+}
+
 void set_heartbeat_engaged_mads(bool c){
   heartbeat_engaged_mads = c;
 }
@@ -337,7 +347,7 @@ void init_tests(void){
   ignition_can_cnt = 0U;
 
   // reset MADS state to prevent leaking between tests
-  mads_set_system_state(false, false, false);
+  mads_set_system_state(false, false, false, false);
   mads_button_press = MADS_BUTTON_UNAVAILABLE;
   heartbeat_engaged_mads = false;
   heartbeat_engaged_mads_mismatches = 0U;
