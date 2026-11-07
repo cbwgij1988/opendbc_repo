@@ -40,6 +40,22 @@ MAX_STEER_RATE_FRAMES = 17  # tx control frames needed before torque can be cut
 # EPS allows user torque above threshold for 50 frames before permanently faulting
 MAX_USER_TORQUE = 500
 
+# EPS LKA arm state (EPS_STATUS->LKA_STATE, see toyota_nodsu_pt.dbc VAL_ 610 LKA_STATE).
+LKA_STATE_STANDBY = 1
+LKA_STATE_UNAVAILABLE = 3
+LKA_STATE_ACTIVE = 5
+LKA_STATE_FAULT_TEMP = 9
+LKA_STATE_FAULT_TEMP2 = 21
+LKA_STATE_FAULT_TEMP3 = 25
+LKA_STATE_PERM_FAULT = 17
+# Standby plus the temporary-fault states: the EPS does not report itself active there, and a fresh
+# STEER_REQUEST edge is the known way to get it to arm again. On the recorded drive these states
+# applied a median of 0.49 (standby) / 0.53 (temporary fault) times the commanded torque, with 33% of
+# frames applying under a quarter of it, against 1.23 while active. 3/11 (unavailable) and 17
+# (permanent fault) are excluded: no edge recovers those.
+LKA_STATE_REARM = (LKA_STATE_STANDBY, LKA_STATE_FAULT_TEMP, LKA_STATE_FAULT_TEMP2, LKA_STATE_FAULT_TEMP3)
+
+
 def get_long_tune(CP, params):
   if CP.carFingerprint in TSS2_CAR:
     if Params().get_bool("ToyotaTSS2Long"):
@@ -70,6 +86,10 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     self.last_angle = 0
     self.stuck_frames = 0
     self.stuck_reset_frames = 0
+    self.eps_rearm_frames = 0
+    self.eps_rearm_reset_frames = 0
+    self.eps_rearm_attempts = 0
+    self.eps_rearm_cooldown = 0
 
     # sunnypilot-pc: low-speed no-return-to-center mitigation.
     # Widen the steer meas window below ~12 m/s so a saturated command can cross
@@ -81,6 +101,16 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     self.STEER_STUCK_SPEED = 12.0     # deadlock logic only at low speed (m/s)
     self.STEER_STUCK_FRAMES = 100     # ~1s of saturating command with no EPS follow (100Hz loop)
     self.STEER_STUCK_RESET_FRAMES = 30 # ~0.3s of zeroed torque to reset the EPS request
+
+    # sunnypilot-pc: EPS LKA re-arm windows (see the re-arm block in update()).
+    # On the recorded drive these no-authority episodes lasted 1.15 s median / 2.25 s p90, so acting
+    # at 1.5 s leaves the brief ones alone and covers the 26% of episodes holding 25% of the time.
+    self.EPS_REARM_FRAMES = 150       # ~1.5s demanding lateral with an unarmed EPS (100Hz loop)
+    # long enough for the EPS's own 25 Hz EPS_STATUS to report the unarmed state ~7 times; every real
+    # arming edge on that drive was followed by the active state within 2 s, at 20 ms median
+    self.EPS_REARM_RESET_FRAMES = 30  # ~0.3s of zeroed torque/request, the edge the EPS needs
+    self.EPS_REARM_MAX_ATTEMPTS = 3   # then back off to one window per EPS_REARM_BACKOFF_FRAMES
+    self.EPS_REARM_BACKOFF_FRAMES = 1000  # ~10s: keep trying, a late-recovering EPS stays dead otherwise
     self.alert_active = False
     self.last_standstill = False
     self.standstill_req = False
@@ -187,6 +217,49 @@ class CarController(CarControllerBase, GasInterceptorCarController):
 
     if self.stuck_reset_frames > 0:
       self.stuck_reset_frames -= 1
+      apply_torque = 0
+
+    # sunnypilot-pc: EPS LKA re-arm for silent lateral-authority loss.
+    # The EPS latches STEER_REQUEST on a low->high edge; a request that is simply held high never
+    # re-arms it. Measured on one real drive (25 segments, 139,038 frames, 24.3 min, Lexus ES TSS2,
+    # lateral demanded by MADS with openpilot disabled): lateral was demanded while the EPS was not
+    # in LKA_STATE_ACTIVE for 298.7 s in 294 episodes, the longest 11.4 s at 12.6-17.2 m/s with the
+    # wheel moving from -4.8 to +23.7 degrees and STEER_REQUEST high on 1137 of its 1139 frames.
+    # Of the 153 returns to active, 124 (81%) were preceded by a request falling edge within 1.2 s,
+    # and 416 of 493 rising edges were followed by the active state within 2 s (median 20 ms).
+    # A request held high armed nothing, ever. So when lateral is demanded and the EPS sits in a
+    # re-armable state, drop torque (which drops STEER_REQUEST through the gate below) so that the
+    # next frame presents a real edge.
+    # Torque magnitude is deliberately not part of the condition: in the second-longest episode
+    # (9.1 s at 0.8-2.4 m/s) the commanded torque was below 50 for 544 of its 914 frames while the
+    # request was high on all of them, so a magnitude gate misses exactly the episodes that need
+    # this, and dropping a request that carries no torque costs nothing.
+    if self.CP.steerControlType != SteerControlType.angle and lat_active and CS.lka_state in LKA_STATE_REARM:
+      self.eps_rearm_frames += 1
+    else:
+      self.eps_rearm_frames = 0
+
+    if CS.lka_state == LKA_STATE_ACTIVE:
+      self.eps_rearm_attempts = 0
+      self.eps_rearm_cooldown = 0
+
+    if self.eps_rearm_frames >= self.EPS_REARM_FRAMES and self.eps_rearm_cooldown == 0:
+      if self.eps_rearm_attempts == 0:
+        carlog.warning(f"EPS LKA_STATE={CS.lka_state} while lateral is demanded, re-arming STEER_REQUEST")
+      self.eps_rearm_reset_frames = self.EPS_REARM_RESET_FRAMES
+      self.eps_rearm_frames = 0
+      self.eps_rearm_attempts += 1
+      # three close tries, then one every EPS_REARM_BACKOFF_FRAMES. Backing off rather than giving
+      # up matters: there is no authority to lose here, since the EPS is not applying our torque
+      # either way, and an EPS that recovers late would otherwise stay unsteered all trip
+      if self.eps_rearm_attempts >= self.EPS_REARM_MAX_ATTEMPTS:
+        self.eps_rearm_cooldown = self.EPS_REARM_BACKOFF_FRAMES
+
+    if self.eps_rearm_cooldown > 0:
+      self.eps_rearm_cooldown -= 1
+
+    if self.eps_rearm_reset_frames > 0:
+      self.eps_rearm_reset_frames -= 1
       apply_torque = 0
 
     # sunnypilot-pc: dash LTA blue (BARRIERS) and STEER_REQUEST reflect actual

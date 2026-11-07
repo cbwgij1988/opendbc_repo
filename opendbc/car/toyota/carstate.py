@@ -24,14 +24,28 @@ AccelPersonality = custom.LongitudinalPlanSP.AccelerationPersonality
 #     if using the other control command, goes directly to 3 after 1.5 seconds
 # - initializing: LTA can report 0 as long as STEER_TORQUE_SENSOR->STEER_ANGLE_INITIALIZING is 1,
 #     and is a catch-all for LKA
-# Note: 9/21/25 are high steer-rate/angle faults triggered by sharp turns that clear
-# immediately; they are not reported as temporary faults to avoid false-positive
-# "Steering Temporarily Unavailable" warnings during cornering.
+# Note: 9/21/25 are the EPS steer-rate/driver-torque fault states. Upstream reports them as
+# temporary faults frame-true; this fork previously ignored them completely (TEMP_STEER_FAULTS
+# only), so an EPS that stayed faulted was never reported at all. Neither extreme is right: measured
+# on one real drive (25 segments, 139,038 frames, Lexus ES TSS2), LKA_STATE 9 covered 11.9% of all
+# frames in 157 runs of 9/21/25 lasting 1.25 s median, 1.91 s p90 and 1.94 s at the longest.
+# Reporting every run is mostly churn (and would drop lateral control, see below), while never
+# reporting them hides an EPS that stays faulted. They are therefore reported only once they persist.
 TEMP_STEER_FAULTS = (0, 11)
+TEMP_STEER_FAULTS_DEBOUNCED = (9, 21, 25)
 # - lka/lta msg drop out: 3 (recoverable)
 # - prolonged high driver torque: 17 (permanent)
 PERM_STEER_FAULTS = (3, 17)
 PERM_STEER_FAULT_DEBOUNCE_FRAMES = 10
+# update() runs at 100 Hz, so 600 frames is 6.0 s. This is not only a warning filter: controlsd
+# gates CC.latActive on steerFaultTemporary, so reporting these states drops lateral control. That
+# has to come last, after carcontroller's re-arm windows have had their three attempts at 1.5 s,
+# 3.0 s and 4.5 s (EPS_REARM_*), and long after the cornering-induced runs seen on the recorded
+# drive (157 runs of 9/21/25, 1.25 s median, 1.94 s at the longest, none reaching even 2.0 s).
+# Note that in this fork the steerTempUnavailable alert additionally requires openpilot to be
+# engaged (selfdrive/car/car_specific.py), so in MADS-only lateral the only visible consequence is
+# the LTA indicator dropping with the withdrawn authority.
+TEMP_STEER_FAULT_DEBOUNCE_FRAMES = 600
 
 # How many consecutive carState frames the decoded KINEMATICS yaw rate may stay bit-identical before
 # we conclude the ECU is not filling the field in. update() runs at 100 Hz, so 3000 frames is 30 s.
@@ -70,6 +84,8 @@ class CarState(CarStateBase, CarStateExt):
     self.gvc = 0.0
     self.secoc_synchronization = None
     self.perm_steer_fault_counter = 0
+    self.temp_steer_fault_counter = 0
+    self.lka_state = 0
 
     self.enhanced_bsm = EnhancedBsmCarState(CP, CP_SP)
 
@@ -242,11 +258,23 @@ class CarState(CarStateBase, CarStateExt):
     ret.steeringPressed = abs(ret.steeringTorque) > STEER_THRESHOLD
 
     # Check EPS LKA/LTA fault status
-    ret.steerFaultTemporary = cp.vl["EPS_STATUS"]["LKA_STATE"] in TEMP_STEER_FAULTS
+    lka_state = cp.vl["EPS_STATUS"]["LKA_STATE"]
+    # Kept for carcontroller: the EPS only latches STEER_REQUEST on a low->high edge, so it
+    # needs to know whether LKA is actually armed, which no published CarState field carries.
+    self.lka_state = lka_state
+
+    # 9/21/25 are only faults if they persist: see TEMP_STEER_FAULTS_DEBOUNCED above.
+    if lka_state in TEMP_STEER_FAULTS_DEBOUNCED:
+      self.temp_steer_fault_counter += 1
+    else:
+      self.temp_steer_fault_counter = 0
+
+    ret.steerFaultTemporary = (lka_state in TEMP_STEER_FAULTS or
+                               self.temp_steer_fault_counter >= TEMP_STEER_FAULT_DEBOUNCE_FRAMES)
 
     # Debounce permanent faults: require N consecutive frames before triggering
     # to filter transient LKA_STATE=3/17 glitches.
-    lka_perm_fault = cp.vl["EPS_STATUS"]["LKA_STATE"] in PERM_STEER_FAULTS
+    lka_perm_fault = lka_state in PERM_STEER_FAULTS
     if lka_perm_fault:
       self.perm_steer_fault_counter += 1
     else:
