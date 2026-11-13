@@ -10,13 +10,12 @@ from opendbc.car.secoc import add_mac, build_sync_mac
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.toyota import toyotacan
 from opendbc.car.toyota.values import CAR, NO_STOP_TIMER_CAR, TSS2_CAR, \
-                                        CarControllerParams, ToyotaFlags, \
-                                        UNSUPPORTED_DSU_CAR
+                                        CarControllerParams, ToyotaFlags
 from opendbc.can import CANPacker
 from opendbc.sunnypilot.car.toyota.auto_brake_hold import AutoBrakeHoldCarController
 from opendbc.sunnypilot.car.toyota.enhanced_bsm import EnhancedBsmCarController
 from opendbc.sunnypilot.car.toyota.gas_interceptor import GasInterceptorCarController
-from opendbc.sunnypilot.car.toyota.values import ToyotaFlagsSP
+from opendbc.sunnypilot.car.toyota.values import ToyotaFlagsSP, TSS2_SMOOTH_KI
 
 Ecu = structs.CarParams.Ecu
 LongCtrlState = structs.CarControl.Actuators.LongControlState
@@ -56,8 +55,8 @@ LKA_STATE_PERM_FAULT = 17
 LKA_STATE_REARM = (LKA_STATE_STANDBY, LKA_STATE_FAULT_TEMP, LKA_STATE_FAULT_TEMP2, LKA_STATE_FAULT_TEMP3)
 
 
-def get_long_tune(CP, params):
-  if CP.carFingerprint in TSS2_CAR:
+def get_long_tune(CP, params, CP_SP):
+  if CP.flags & ToyotaFlags.TSS2:
     if Params().get_bool("ToyotaTSS2Long"):
       #kiBP = [0.,   2.0,  9.0,  14.,  20.,  27.]
       #kiV =  [0.25, 0.25, 0.15, 0.12, 0.12, 0.12]
@@ -71,6 +70,9 @@ def get_long_tune(CP, params):
   else:
     kiBP = [0., 5., 35.]
     kiV = [3.6, 2.4, 1.5]
+
+  if CP_SP.flags & ToyotaFlagsSP.TSS2_SMOOTH:
+    kiBP, kiV = TSS2_SMOOTH_KI
 
   return PIDController(0.0, (kiBP, kiV), k_f=1.0,
                        pos_limit=params.ACCEL_MAX, neg_limit=params.ACCEL_MIN,
@@ -119,7 +121,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     self.distance_button = 0
 
     # *** start long control state ***
-    self.long_pid = get_long_tune(self.CP, self.params)
+    self.long_pid = get_long_tune(self.CP, self.params, self.CP_SP)
     self.aego = FirstOrderFilter(0.0, 0.25, DT_CTRL * 3)
     self.pitch = FirstOrderFilter(0, 0.5, DT_CTRL)
     self.pitch_hp = HighPassFilter(0.0, 0.25, 1.5, DT_CTRL)
@@ -302,7 +304,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     can_sends.append(steer_command)
 
     # STEERING_LTA does not seem to allow more rate by sending faster, and may wind up easier
-    if self.frame % 2 == 0 and self.CP.carFingerprint in TSS2_CAR:
+    if self.frame % 2 == 0 and self.CP.flags & ToyotaFlags.TSS2:
       lta_active = lat_active and self.CP.steerControlType == SteerControlType.angle
       # cut steering torque with TORQUE_WIND_DOWN when either EPS torque or driver torque is above
       # the threshold, to limit max lateral acceleration and for driver torque blending respectively.
@@ -442,7 +444,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     else:
       # we can spam can to cancel the system even if we are using lat only control
       if pcm_cancel_cmd:
-        if self.CP.carFingerprint in UNSUPPORTED_DSU_CAR:
+        if self.CP.flags & ToyotaFlags.UNSUPPORTED_DSU:
           can_sends.append(toyotacan.create_acc_cancel_command(self.packer))
         else:
           can_sends.append(toyotacan.create_accel_command(self.packer, 0, pcm_cancel_cmd, True, False, lead, CS.acc_type, False, self.distance_button))
